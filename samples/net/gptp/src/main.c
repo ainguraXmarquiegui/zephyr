@@ -16,9 +16,22 @@ LOG_MODULE_REGISTER(net_gptp_sample, LOG_LEVEL_DBG);
 #include <net/ethernet.h>
 #include <net/gptp.h>
 
+/*USER BEGIN INCLUDES*/
+#include <net/ptp_time.h>
+#include <sys/printk.h>
+#include <sys/util.h>
+/*USER END INCLUDES*/
+
 extern void init_testing(void);
 
 static struct gptp_phase_dis_cb phase_dis;
+
+/*USER BEGIN VARIABLES*/
+static struct net_ptp_time slave_time;
+//struct gptp_clk_src_time_invoke_params src_time_invoke_parameters;
+bool gm_present;
+int status;
+/*USER END VARIABLES*/
 
 #if defined(CONFIG_NET_GPTP_VLAN)
 /* User data for the interface callback */
@@ -160,6 +173,38 @@ static int init_app(void)
 void main(void)
 {
 	init_app();
-
 	init_testing();
+	
+	/* USER BEGIN MAIN.C*/
+	while(1){
+	
+	status=gptp_event_capture(&slave_time, &gm_present);
+	
+	LOG_INF("");
+	LOG_INF("");
+	LOG_INF("Standard info plot:");
+	LOG_INF("gPTP event capture is %i", status); // 0 es NO ERROR
+	LOG_INF("gPTP time second %u", slave_time.second);
+	LOG_INF("");
+	LOG_INF("Plot slave time SECONDS:");
+	LOG_INF("gPTP slave time second (u) %u", slave_time.second);
+//	LOG_INF("gPTP slave time second (lli) %lli", slave_time.second);
+//	LOG_INF("gPTP slave time second (d) %d", slave_time.second);
+	LOG_INF("gPTP slave time second (X) 0x%X", slave_time.second);
+	LOG_INF("");
+	LOG_INF("Plot slave time NANOSECONDS:");
+	LOG_INF("gPTP slave time nanosecond (u) %u", slave_time.nanosecond);
+//	LOG_INF("gPTP slave time nanosecond (lli) %lli", slave_time.nanosecond);
+//	LOG_INF("gPTP slave time nanosecond (d) %d", slave_time.nanosecond);
+	LOG_INF("gPTP slave time nanosecond (X) 0x%X", slave_time.nanosecond);
+	LOG_INF("");
+	//LOG_INF("slave_time address: 0x%X", slave_time);
+	LOG_INF("slave_time.second address: 0x%X", &(slave_time.second));
+	LOG_INF("slave_time.nanosecond address: 0x%X", &(slave_time.nanosecond));
+		
+	k_msleep(1000); //sleep time in ms
+	}
+	/* USER END MAIN.C*/
+	
+	
 }
