@@ -24,6 +24,8 @@ LOG_MODULE_REGISTER(net_gptp_sample, LOG_LEVEL_DBG);
 
 extern void init_testing(void);
 
+extern uint32_t ATVRval, ATVRaddr, ATCRval, ATCRaddr;
+
 static struct gptp_phase_dis_cb phase_dis;
 
 /*USER BEGIN VARIABLES*/
@@ -197,6 +199,10 @@ void main(void)
 //	LOG_INF("gPTP slave time nanosecond (lli) %lli", slave_time.nanosecond);
 //	LOG_INF("gPTP slave time nanosecond (d) %d", slave_time.nanosecond);
 	LOG_INF("gPTP slave time nanosecond (X) 0x%X", slave_time.nanosecond);
+	LOG_INF("ATCRval! (X) 0x%X", ATCRval);
+	LOG_INF("ATCRaddr! (X) 0x%X", ATCRaddr);
+	LOG_INF("ATVRval! (X) 0x%X", ATVRval);
+	LOG_INF("ATVRaddr! (X) 0x%X", ATVRaddr);
 	LOG_INF("");
 	//LOG_INF("slave_time address: 0x%X", slave_time);
 	LOG_INF("slave_time.second address: 0x%X", &(slave_time.second));
