@@ -686,6 +686,10 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 		ts_tx_wr++;
 		if (ts_tx_wr >= CONFIG_ETH_MCUX_TX_BUFFERS) {
 			ts_tx_wr = 0;
+            if (ts_tx_pkt[ts_tx_wr] != NULL) {
+                net_pkt_unref(ts_tx_pkt[ts_tx_wr]);
+                ts_tx_pkt[ts_tx_wr] = NULL;
+            }
 		}
 	} else
 #endif

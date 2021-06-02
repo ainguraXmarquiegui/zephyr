@@ -59,7 +59,11 @@ const clock_enet_pll_config_t ethPllConfig = {
 #ifdef CONFIG_ETH_MCUX
 	.enableClkOutput = true,
 #endif
+#if defined(CONFIG_PTP_CLOCK_MCUX)
+	.enableClkOutput25M = true,
+#else
 	.enableClkOutput25M = false,
+#endif
 	.loopDivider = 1,
 };
 #endif
@@ -143,6 +147,8 @@ static ALWAYS_INLINE void clock_init(void)
 	CLOCK_InitUsb1Pll(&usb1PllConfig); /* Configure USB1 PLL to 480M */
 #endif
 #ifdef CONFIG_INIT_ENET_PLL
+	/* DeInit Enet PLL. */
+	CLOCK_DeinitEnetPll();
 	CLOCK_InitEnetPll(&ethPllConfig);
 #endif
 #ifdef CONFIG_INIT_VIDEO_PLL
