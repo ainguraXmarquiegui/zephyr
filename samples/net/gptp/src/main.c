@@ -172,27 +172,111 @@ static int init_app(void)
 
 void main(void)
 {
-    uint64_t prevsecond = 0;
-    uint32_t prevnanosecond = 0;
+	int32_t max_lapse_diff_ns = 0, min_lapse_diff_ns = 0;
+	int64_t lapse_diff_ns;
+	uint64_t current_timelapse_ns;
+	uint32_t looptime_ms;
+	uint64_t prevsecond = 0;
+    uint64_t prevnanosecond = 0;
+	uint32_t lapse_diff_err_ns, lapse_diff_err_count = 0;
+	uint32_t report_loops, report_loop = 0;
+	int32_t numbertest;
 
     init_app();
     init_testing();
 
+	/* Configurable parameters */
+	looptime_ms = 593; /* Time to sleep for between test loops. In Miliseconds */
+	lapse_diff_err_ns = 5000000; /* Loop difference threshold to signal an error, in nanoseconds */
+
+	/* Prepare test loop */	
+	min_lapse_diff_ns = looptime_ms * 1000000;
+	/* We want preiodic reports coming no faster than 1second apart */
+	if (looptime_ms >= 1000) {
+		report_loops = 1;
+	} else {
+		report_loops = 1000 / looptime_ms;
+	}
+
+	/* Verify the compiler maximum and minimum values to verify that
+	we are comparing limits correctly further on */
+	LOG_INF("BEGIN NUMBERTEST");
+	numbertest = 0x0;
+	LOG_INF("NUMBERTEST 0x0: %d, 0x%X", numbertest, numbertest);
+	numbertest = 0xFFFFFFFF;
+	LOG_INF("NUMBERTEST 0xFFFFFFFF: %d, 0x%X", numbertest, numbertest);
+	numbertest = 0x80000000;
+	LOG_INF("NUMBERTEST 0x80000000: %d, 0x%X", numbertest, numbertest);
+	numbertest = 0x7FFFFFFF;
+	LOG_INF("NUMBERTEST 0x7FFFFFFF: %d, 0x%X", numbertest, numbertest);
+	LOG_INF("END NUMBERTEST");
+
     /* USER BEGIN MAIN.C*/
     while(1){
 
+		/* Extract the gPTP time NOW */
         status=gptp_event_capture(&slave_time, &gm_present);
 
-        LOG_INF("gPTP time %u.%u", slave_time.second, slave_time.nanosecond);
-        if ( slave_time.second == prevsecond ) {
-            if (slave_time.nanosecond != prevnanosecond)
-                LOG_ERR("gPTP time ERROR: %u.%u != %u.%u", prevsecond, prevnanosecond, slave_time.second, slave_time.nanosecond);
-            else
-                LOG_WRN("gPTP time ERROR: %u.%u == %u.%u", prevsecond, prevnanosecond, slave_time.second, slave_time.nanosecond);
-        }
+		/* Make sure we are already received an external time reference */
+		if (slave_time.second != 0) {
+			/* Time can't go backwards. If we see this happen, it's clearly an error */
+			if ((slave_time.second < prevsecond) || ((slave_time.second == prevsecond) && (slave_time.nanosecond < prevnanosecond)))
+			{
+				LOG_ERR("gptp time ERROR: TIME WENT BACKWARDS!!!!!%u.%u > %u.%u", prevsecond, prevnanosecond, slave_time.second, slave_time.nanosecond);
+			}
+			else {
+				/* Make sure we are in our second loop and we have a previous reference */
+				if ((prevsecond != 0) && (prevnanosecond != 0)) {
+					/* Calculate how much time passed since the last sample */
+					current_timelapse_ns = ((((slave_time.second - prevsecond) * 1000000000) + slave_time.nanosecond) - prevnanosecond);
+					/* Calculate real lapse difference against the sleep time */
+					lapse_diff_ns = current_timelapse_ns - (looptime_ms * 1000000);
+					if (llabs(lapse_diff_ns) < abs(min_lapse_diff_ns))
+					{
+						/* Register the minimum value */
+						/* Take care of value limits */
+						if (lapse_diff_ns > 2147483648) {
+							min_lapse_diff_ns = 2147483648;
+						} else if (lapse_diff_ns < -2147483648) {
+							min_lapse_diff_ns = -2147483648;
+						} else {
+							min_lapse_diff_ns = lapse_diff_ns;
+						}
+						LOG_WRN("gPTP time: New MIN lapse difference: %d", min_lapse_diff_ns);
+					}
+					if (llabs(lapse_diff_ns) > abs(max_lapse_diff_ns))
+					{
+						/* Register the minimum value */
+						/* Take care of value limits */
+						if (lapse_diff_ns > 2147483648) {
+							max_lapse_diff_ns = 2147483648;
+						} else if (lapse_diff_ns < -2147483648) {
+							max_lapse_diff_ns = -2147483648;
+						} else {
+							max_lapse_diff_ns = lapse_diff_ns;
+						}
+						LOG_WRN("gPTP time: New MAX lapse difference: %d", max_lapse_diff_ns);
+					}
+					/* If the lapse difference is larger than the set limit, increase the error counter */
+					if (abs(lapse_diff_ns) > lapse_diff_err_ns) {
+						lapse_diff_err_count++;
+					}
+				}
+			}
+
+			/* Control report pacing */
+			report_loop++;
+			if (report_loop >= report_loops) {
+				/* Print report */
+				LOG_INF("gPTP time %u.%u", slave_time.second, slave_time.nanosecond);
+				LOG_INF("gPTP lapse diff error count (%u ns): %u", lapse_diff_err_ns, lapse_diff_err_count);
+				LOG_INF("gPTP max lapse difference: %d | gPTP min lapse difference: %d", max_lapse_diff_ns, min_lapse_diff_ns);
+				report_loop = 0;
+			}
+		}
         prevsecond = slave_time.second;
         prevnanosecond = slave_time.nanosecond;
-        k_msleep(1000); //sleep time in ms
+        k_msleep(looptime_ms); //sleep time in ms
     }
     /* USER END MAIN.C*/
 }
