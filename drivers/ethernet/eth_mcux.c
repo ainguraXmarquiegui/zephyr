@@ -966,7 +966,7 @@ static void eth_mcux_init(const struct device *dev)
 #if defined(CONFIG_PTP_CLOCK_MCUX)
 	ENET_AddMulticastGroup(context->base, ptp_multicast);
 
-	context->ptp_config.channel = kENET_PtpTimerChannel1;
+	context->ptp_config.channel = kENET_PtpTimerChannel3;
 	context->ptp_config.ptp1588ClockSrc_Hz =
 					CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	context->clk_ratio = 1.0;
