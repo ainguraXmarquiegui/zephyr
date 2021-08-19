@@ -259,6 +259,11 @@ static int mimxrt1050_evk_init(const struct device *dev)
 	IOMUXC_SetPinMux(IOMUXC_GPIO_EMC_40_ENET_MDC, 0);
 	IOMUXC_SetPinMux(IOMUXC_GPIO_EMC_41_ENET_MDIO, 0);
 
+	/* GPIO_AD_B1_02 is configured as 1588_EVENT2_OUT */
+	IOMUXC_SetPinMux(IOMUXC_GPIO_AD_B1_02_ENET_1588_EVENT2_OUT, 0U);
+	/* GPIO_AD_B0_12 PAD functional properties */
+	IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B1_02_ENET_1588_EVENT2_OUT, 0x10B0u);
+
 	/* Shared GPIO between USER_LED and ENET_RST */
 	IOMUXC_SetPinConfig(IOMUXC_GPIO_AD_B0_09_GPIO1_IO09, 0xB0A9u);
 
