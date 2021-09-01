@@ -1168,8 +1168,13 @@ static void eth_mcux_common_isr(const struct device *dev)
 	} else if (EIR & ENET_EIR_MII_MASK) {
 		k_work_submit(&context->phy_work);
 		ENET_ClearInterruptStatus(context->base, kENET_MiiInterrupt);
+	} else if (EIR & ENET_TS_INTERRUPT) {
+		ENET_TimeStampIRQHandler(context->base, &context->enet_handle);
 	} else if (EIR) {
-		ENET_ClearInterruptStatus(context->base, 0xFFFFFFFF);
+		ENET_ClearInterruptStatus(context->base,
+			~(kENET_TxBufferInterrupt | kENET_TxFrameInterrupt
+			  | kENET_RxBufferInterrupt | kENET_RxFrameInterrupt
+			  | ENET_EIR_MII_MASK | ENET_TS_INTERRUPT));
 	}
 
 	irq_unlock(irq_lock_key);
