@@ -292,7 +292,7 @@ factory) to ensure SWD signals are connected to the OpenSDA microcontroller.
 
 Follow the instructions in :ref:`Enable QSPI flash support in SEGGER JLink`_
 in order to support your EVK if you have modified it to boot from QSPI NOR
-flash.
+flash as specifiee by NXP AN12108.
 
 Option 2: :ref:`jlink-external-debug-probe`
 -------------------------------------------
