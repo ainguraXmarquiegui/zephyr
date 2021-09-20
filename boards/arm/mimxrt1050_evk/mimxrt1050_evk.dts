@@ -19,7 +19,7 @@
 		watchdog0 = &wdog0;
 	};
 
-	chosen {
+	chosen: chosen {
 		zephyr,sram = &sdram0;
 		zephyr,itcm = &itcm;
 		zephyr,dtcm = &dtcm;
