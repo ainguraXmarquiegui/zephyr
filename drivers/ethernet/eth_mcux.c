@@ -1358,7 +1358,7 @@ static void eth_mcux_err_isr(const struct device *dev)
 									\
 	static void eth##n##_config_func(void);				\
 									\
-	static NOCACHE uint8_t						\ 
+	static NOCACHE uint8_t						\
 		enet_frame_##n##_buf[NET_ETH_MAX_FRAME_SIZE];		\
 									\
 	static struct eth_context eth##n##_context = {			\

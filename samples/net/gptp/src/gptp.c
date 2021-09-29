@@ -95,10 +95,10 @@ void init_testing(void)
 				if ( slave_time.second == prevsecond ) {
 					if (slave_time.nanosecond == prevnanosecond)
 					{
-						LOG_ERR("gPTP time ERROR: %llu.%llu != %llu.%llu\n", prevsecond, prevnanosecond, slave_time.second, slave_time.nanosecond);
+						LOG_ERR("gPTP time ERROR: %llu.%llu != %llu.%llu\n", prevsecond, prevnanosecond, slave_time.second, (uint64_t)slave_time.nanosecond);
 					}
 				}
-				printk("read time %llu.%llu\n", slave_time.second, slave_time.nanosecond);
+				printk("read time %llu.%llu\n", slave_time.second, (uint64_t)slave_time.nanosecond);
 				prevsecond = slave_time.second;
 				prevnanosecond = slave_time.nanosecond;
 			}
