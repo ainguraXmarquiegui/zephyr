@@ -22,7 +22,7 @@ manifest:
     - name: upstream
       url-base: https://github.com/zephyrproject-rtos
     - name: test_ptp_dev
-      url-base: ssh://git@bitbucket.sw.nxp.com/~nxa22633
+      url-base: https://github.com/NXPmicro/hal_nxp.git
 
   #
   # Please add items below based on alphabetical order
