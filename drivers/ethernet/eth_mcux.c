@@ -174,8 +174,7 @@ struct eth_context {
 
 #if defined(CONFIG_PTP_CLOCK_MCUX)
 /* Packets to be timestamped. */
-static struct net_pkt *ts_tx_pkt[CONFIG_ETH_MCUX_TX_BUFFERS];
-static int ts_tx_rd, ts_tx_wr;
+static struct net_pkt *ts_tx_pkt;
 #endif
 
 /* Use ENET_FRAME_MAX_VLANFRAMELEN for VLAN frame size
@@ -717,15 +716,11 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 					  context->frame_buf, total_len, RING_ID, true, NULL);
 
 		if (!status) {
-			ts_tx_pkt[ts_tx_wr] = net_pkt_ref(pkt);
+			ts_tx_pkt = net_pkt_ref(pkt);
 		} else {
-			ts_tx_pkt[ts_tx_wr] = NULL;
+			ts_tx_pkt = NULL;
 		}
 
-		ts_tx_wr++;
-		if (ts_tx_wr >= CONFIG_ETH_MCUX_TX_BUFFERS) {
-			ts_tx_wr = 0;
-		}
 	} else
 #endif
 	{
@@ -868,7 +863,7 @@ static inline void ts_register_tx_event(struct eth_context *context,
 {
 	struct net_pkt *pkt;
 
-	pkt = ts_tx_pkt[ts_tx_rd];
+	pkt = ts_tx_pkt;
 	if (pkt && atomic_get(&pkt->atomic_ref) > 0) {
 		if (eth_get_ptp_data(net_pkt_iface(pkt), pkt)) {
 			if (frameinfo->isTsAvail) {
@@ -890,11 +885,7 @@ static inline void ts_register_tx_event(struct eth_context *context,
 		}
 	}
 
-	ts_tx_pkt[ts_tx_rd++] = NULL;
-
-	if (ts_tx_rd >= CONFIG_ETH_MCUX_TX_BUFFERS) {
-		ts_tx_rd = 0;
-	}
+	ts_tx_pkt = NULL;
 }
 #endif /* CONFIG_PTP_CLOCK_MCUX && CONFIG_NET_L2_PTP */
 
@@ -931,7 +922,7 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 	case kENET_TimeStampEvent:
 		/* Time stamp event.  */
 		/* Reset periodic timer to default value. */
-		context->base->ATPER = NSEC_PER_SEC;
+		//context->base->ATPER = NSEC_PER_SEC;
 		break;
 	case kENET_TimeStampAvailEvent:
 		/* Time stamp available event.  */
@@ -960,8 +951,7 @@ static void eth_tx_thread(void *arg1, void *unused1, void *unused2)
 	while(1) {
 		if (k_sem_take(&context->tx_thread_sem, K_FOREVER) == 0) {
 			/* fix me
-			 * mutex here is to protect the bd index and
-			 * ts_tx_pkt index ts_tx_rd and ts_tx_wr
+			 * mutex here is to protect the bd index
 			 * as they maybe overlapped which will cause
 			 * timestamp corrupt
 			 */
@@ -1079,12 +1069,6 @@ static void eth_mcux_init(const struct device *dev)
 static int eth_init(const struct device *dev)
 {
 	struct eth_context *context = dev->data;
-
-#if defined(CONFIG_PTP_CLOCK_MCUX)
-	ts_tx_rd = 0;
-	ts_tx_wr = 0;
-	(void)memset(ts_tx_pkt, 0, sizeof(ts_tx_pkt));
-#endif
 
 #if defined(CONFIG_NET_POWER_MANAGEMENT)
 	const uint32_t inst = ENET_GetInstance(context->base);
