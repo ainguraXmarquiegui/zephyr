@@ -92,6 +92,13 @@ config ETH_MCUX_PTP_CLOCK_INIT_PRIO
 	  a dependency from the network stack that this device
 	  initializes before network stack (NET_INIT_PRIO).
 
+config PTP_UPDATE_THREAD_PRI
+	int
+	default 10
+	help
+	  MCUX need a thread to update the ptp inner counter. This
+	  is a lower priority task.
+
 endif # PTP_CLOCK_MCUX
 
 endif # ETH_MCUX
