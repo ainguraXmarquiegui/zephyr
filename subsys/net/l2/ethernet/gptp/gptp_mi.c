@@ -781,6 +781,7 @@ static void gptp_update_local_port_clock(void)
 		nanosecond_diff = -NSEC_PER_SEC + nanosecond_diff;
 	}
 
+	printk("XXX rate_adjust\n");
 	ptp_clock_rate_adjust(clk, port_ds->neighbor_rate_ratio);
 
 	/* If time difference is too high, set the clock value.
@@ -827,6 +828,7 @@ static void gptp_update_local_port_clock(void)
 				 (unsigned long int)tm.nanosecond);
 		}
 
+		printk("XXX set\n");
 		ptp_clock_set(clk, &tm);
 
 	skip_clock_set:
@@ -838,6 +840,7 @@ static void gptp_update_local_port_clock(void)
 			nanosecond_diff = 200;
 		}
 
+		printk("XXX adjust\n");
 		ptp_clock_adjust(clk, nanosecond_diff);
 	}
 }
