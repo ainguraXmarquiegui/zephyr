@@ -1562,6 +1562,7 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	struct net_ptp_time enet_time;
+	enet_ptp_time_t enet_set_time;
 	uint64_t req_ns;
 	uint64_t current_ns;
 
@@ -1572,6 +1573,20 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	context->offset += req_ns - current_ns;
 	k_mutex_unlock(&context->ptp_mutex);
+
+	req_ns +=0;
+	enet_set_time.second = (req_ns / NSEC_PER_SEC);
+	enet_set_time.nanosecond = (req_ns % NSEC_PER_SEC);
+	printk("\
+call: %llu.%us\n\
+current: %llu.%us\n\
+offset: %lluns\n\
+set: %llu.%us\n\
+",
+tm->second, tm->nanosecond,
+enet_time.second, enet_time.nanosecond,
+context->offset,
+enet_set_time.second, enet_set_time.nanosecond);
 
 	return 0;
 }
@@ -1616,12 +1631,15 @@ static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 	if (ratio < 1.0) {
 		corr = hw_inc - 1;
 		val = 1.0 / (hw_inc * (1.0 - ratio));
+		printk("slower ");
 	} else if (ratio > 1.0) {
 		corr = hw_inc + 1;
 		val = 1.0 / (hw_inc * (ratio-1.0));
+		printk("faster ");
 	} else {
 		val = 0;
 		corr = hw_inc;
+		printk("spotON ");
 	}
 
 	if (val >= INT32_MAX) {
@@ -1636,6 +1654,7 @@ static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
+	printk(" rate_adj. inc: %d, per: %d\n", corr, mul);
 
 	return 0;
 }
