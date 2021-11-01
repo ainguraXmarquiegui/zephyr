@@ -766,6 +766,8 @@ static void gptp_update_local_port_clock(void)
 		(global_ds->sync_receipt_time.fract_nsecond / GPTP_POW2_16) -
 		(global_ds->sync_receipt_local_time % NSEC_PER_SEC);
 
+	printk("XXX sdiff: %lld, nsdiff: %lld\n", second_diff, nanosecond_diff);
+
 	clk = net_eth_get_ptp_clock(GPTP_PORT_IFACE(port));
 	if (!clk) {
 		return;
