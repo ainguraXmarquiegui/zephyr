@@ -1574,14 +1574,14 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	context->offset += req_ns - current_ns;
 	k_mutex_unlock(&context->ptp_mutex);
 
-	req_ns +=0;
+	req_ns += 0;
 	enet_set_time.second = (req_ns / NSEC_PER_SEC);
 	enet_set_time.nanosecond = (req_ns % NSEC_PER_SEC);
 	printk("\
-call: %llu.%us\n\
+call:    %llu.%us\n\
 current: %llu.%us\n\
-offset: %lluns\n\
-set: %llu.%us\n\
+offset:  %lluns\n\
+set:     %llu.%us\n\
 ",
 tm->second, tm->nanosecond,
 enet_time.second, enet_time.nanosecond,
@@ -1654,7 +1654,7 @@ static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
-	printk(" rate_adj. inc: %d, per: %d\n", corr, mul);
+	printk(" rate_adj. rate: %f, inc: %d, per: %d\n", ratio, corr, mul);
 
 	return 0;
 }
