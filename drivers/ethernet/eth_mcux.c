@@ -1536,6 +1536,10 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	enet_time.nanosecond = tm->nanosecond;
 
 	ENET_Ptp1588SetTimer(context->base, &context->enet_handle, &enet_time);
+	// Disable timer adjust
+	ENET_Ptp1588AdjustTimer(context->base, 40, 0);
+	// Reset Ratio
+	context->clk_ratio = 1.0;
 	return 0;
 }
 
@@ -1582,60 +1586,56 @@ static int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 
 static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 {
-  const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
-  struct ptp_context *ptp_context = dev->data;
-  struct eth_context *context = ptp_context->eth_context;
-  float atcor_f;
-  uint32_t atcor;
-  uint8_t inc_corr;
+	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
+	struct ptp_context *ptp_context = dev->data;
+	struct eth_context *context = ptp_context->eth_context;
+	int corr;
+	int32_t mul;
+	float val;
 
-#if 0 // is this necessary?
-  ratio *= context->clk_ratio;
+	/* No change needed. */
+	if (ratio == 1.0) {
+		return 0;
+	}
 
-  /* Save new ratio. */
-  context->clk_ratio = ratio;
-#endif
+	ratio *= context->clk_ratio;
 
-  atcor = 0;
+	/* Limit possible ratio. */
+	if ((ratio > 1.0 + 1.0/(2 * hw_inc)) ||
+			(ratio < 1.0 - 1.0/(2 * hw_inc))) {
+		return -EINVAL;
+	}
 
-  if (ratio > 1.0) {
-    for (inc_corr=hw_inc; ((inc_corr > 0) && (atcor == 0)) ; --inc_corr) {
-      atcor_f = (hw_inc - inc_corr)*CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ /
-        (NSEC_PER_SEC * (ratio - 1));
-      if ((atcor_f >= 1) && (atcor_f <= CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ)) {
-        atcor = atcor_f;
-      } else {
-        atcor = 0;
-      }
-    }
-    if (atcor == 0) {
-      printk("ERROR: No valid correction found.\n");
-    }
-    printk("slower ");
-  } else if (ratio < 1.0) {
-    for (inc_corr=hw_inc; ((inc_corr < 127) && (atcor == 0)) ; ++inc_corr) {
-      atcor_f = (inc_corr - hw_inc)*CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ /
-        (NSEC_PER_SEC * (1 - ratio));
-      if ((atcor_f >= 1) && (atcor_f <= CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ)) {
-        atcor = atcor_f;
-      } else {
-        atcor = 0;
-      }
-    }
-    if (atcor == 0) {
-      printk("ERROR: No valid correction found.\n");
-    }
-    printk("faster ");
-  } else {
-    atcor = 0;
-    inc_corr = hw_inc;
-    printk("spotON ");
-  }
+	/* Save new ratio. */
+	context->clk_ratio = ratio;
 
-  ENET_Ptp1588AdjustTimer(context->base, inc_corr, atcor);
-  printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, inc_corr, atcor);
+	if (ratio < 1.0) {
+		corr = hw_inc - 1;
+		val = 1.0 / (hw_inc * (1.0 - ratio));
+    	printk("faster ");
+	} else if (ratio > 1.0) {
+		corr = hw_inc + 1;
+		val = 1.0 / (hw_inc * (ratio-1.0));
+    	printk("slower ");
+	} else {
+		val = 0;
+		corr = hw_inc;
+    	printk("spotON ");
+	}
 
-  return 0;
+	if (val >= INT32_MAX) {
+		/* Value is too high.
+		 * It is not possible to adjust the rate of the clock.
+		 */
+		mul = 0;
+	} else {
+		mul = val;
+	}
+
+	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
+  	printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
+
+	return 0;
 }
 
 static const struct ptp_clock_driver_api api = {

@@ -270,6 +270,15 @@ static void gptp_md_compute_pdelay_rate_ratio(int port)
 			state->ini_resp_ingress_tstamp = ingress_tstamp;
 			state->ini_resp_evt_tstamp = resp_evt_tstamp;
 			state->neighbor_rate_ratio_valid = true;
+#if 0
+			printk("ini: %llu, ingress: %llu, resp: %llu\n\
+iniresp: %lld, ingressresp: %lld\n",
+				state->ini_resp_evt_tstamp,
+				ingress_tstamp, resp_evt_tstamp,
+				resp_evt_tstamp - state->ini_resp_evt_tstamp,
+				ingress_tstamp - state->ini_resp_evt_tstamp
+				);
+#endif
 		}
 	}
 
