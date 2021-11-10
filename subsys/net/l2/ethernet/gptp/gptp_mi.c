@@ -843,14 +843,8 @@ static void gptp_update_local_port_clock(void)
 		irq_unlock(key);
 	} else {
 		ptp_clock_rate_adjust(clk, port_ds->neighbor_rate_ratio);
-# if 0
-		if (nanosecond_diff < -200) {
-			nanosecond_diff = -200;
-		} else if (nanosecond_diff > 200) {
-			nanosecond_diff = 200;
-		}
-
-		ptp_clock_adjust(clk, nanosecond_diff);
+# if 1
+	ptp_clock_adjust(clk, nanosecond_diff);
 #endif
 	}
 	printk("gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
