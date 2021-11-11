@@ -781,14 +781,12 @@ static void gptp_update_local_port_clock(void)
 		nanosecond_diff = -NSEC_PER_SEC + nanosecond_diff;
 	}
 
-	ptp_clock_rate_adjust(clk, port_ds->neighbor_rate_ratio);
-
 	/* If time difference is too high, set the clock value.
 	 * Otherwise, adjust it.
 	 */
 	if (second_diff || (second_diff == 0 &&
-			    (nanosecond_diff < -5000 ||
-			     nanosecond_diff > 5000))) {
+			    (nanosecond_diff < -12500000 ||
+			     nanosecond_diff > 12500000))) {
 		bool underflow = false;
 
 		key = irq_lock();
@@ -831,13 +829,16 @@ static void gptp_update_local_port_clock(void)
 
 	skip_clock_set:
 		irq_unlock(key);
+		printk("set gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
 	} else {
+		printk("adj gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
 		if (nanosecond_diff < -200) {
 			nanosecond_diff = -200;
 		} else if (nanosecond_diff > 200) {
 			nanosecond_diff = 200;
 		}
 
+		ptp_clock_rate_adjust(clk, port_ds->neighbor_rate_ratio);
 		ptp_clock_adjust(clk, nanosecond_diff);
 	}
 }

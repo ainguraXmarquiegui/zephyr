@@ -1532,7 +1532,7 @@ struct ptp_context {
 
 static struct ptp_context ptp_mcux_0_context;
 
-static int ptp_clock_mcux_get(const struct device *dev,
+static inline int ptp_clock_mcux_get(const struct device *dev,
 			      struct net_ptp_time *tm)
 {
 	struct ptp_context *ptp_context = dev->data;
@@ -1556,11 +1556,19 @@ static int ptp_clock_mcux_get(const struct device *dev,
 }
 
 
-static int ptp_clock_mcux_set(const struct device *dev,
+static inline int ptp_clock_mcux_set(const struct device *dev,
 			      struct net_ptp_time *tm)
 {
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
+#if 1
+	enet_ptp_time_t enet_set_time;
+
+	enet_set_time.second = tm->second;
+	enet_set_time.nanosecond = tm->nanosecond;
+	ENET_Ptp1588SetTimer(context->base, &context->enet_handle, &enet_set_time);
+#endif
+
 	struct net_ptp_time enet_time;
 	uint64_t req_ns;
 	uint64_t current_ns;
@@ -1573,22 +1581,43 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	context->offset += req_ns - current_ns;
 	k_mutex_unlock(&context->ptp_mutex);
 
+	// Disable timer adjust
+	ENET_Ptp1588AdjustTimer(context->base, 40, 0);
+	// Reset Ratio
+	context->clk_ratio = 1.0;
 	return 0;
 }
 
-static int ptp_clock_mcux_adjust(const struct device *dev, int increment)
+static inline int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 {
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
+	int key, ret;
+
+	if ((increment <= -NSEC_PER_SEC) || (increment >= NSEC_PER_SEC)) {
+			ret = -EINVAL;
+	} else {
+			key = irq_lock();
+			if (context->base->ATPER != NSEC_PER_SEC) {
+					ret = -EBUSY;
+			} else {
+					/* Seconds counter is handled by software. Change the
+						* period of one software second to adjust the clock.
+						*/
+					context->base->ATPER = NSEC_PER_SEC - increment;
+					ret = 0;
+			}
+			irq_unlock(key);
+	}
 
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	context->offset += increment;
 	k_mutex_unlock(&context->ptp_mutex);
 
-	return 0;
+	return ret;
 }
 
-static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
+static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 {
 	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	struct ptp_context *ptp_context = dev->data;
@@ -1636,6 +1665,7 @@ static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
+	printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
 
 	return 0;
 }
