@@ -1547,8 +1547,9 @@ static inline int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 	struct eth_context *context = ptp_context->eth_context;
 	int key, ret;
 
-	if ((increment <= -NSEC_PER_SEC) || (increment >= NSEC_PER_SEC)) {
-			ret = -EINVAL;
+	if ((increment <= (int32_t)(-NSEC_PER_SEC)) ||
+			(increment >= (int32_t)NSEC_PER_SEC)) {
+		ret = -EINVAL;
 	} else {
 			key = irq_lock();
 			if (context->base->ATPER != NSEC_PER_SEC) {
