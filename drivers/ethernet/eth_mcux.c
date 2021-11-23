@@ -129,7 +129,7 @@ struct eth_context {
 	struct net_pkt *ts_tx_pkt;
 	const struct device *ptp_clock;
 	enet_ptp_config_t ptp_config;
-	float clk_ratio;
+	double clk_ratio;
 	struct k_mutex ptp_mutex;
 	struct k_thread ptp_thread;
 	K_KERNEL_STACK_MEMBER(ptp_thread_stack, 1600);
@@ -1573,30 +1573,31 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 	struct eth_context *context = ptp_context->eth_context;
 	int corr;
 	int32_t mul;
-	float val;
+	double val;
+	double accRatio;
 
 	/* No change needed. */
 	if (ratio == 1.0) {
 		return 0;
 	}
 
-	ratio *= context->clk_ratio;
+	accRatio = ratio * context->clk_ratio;
 
 	/* Limit possible ratio. */
-	if ((ratio > 1.0 + 1.0/(2 * hw_inc)) ||
-			(ratio < 1.0 - 1.0/(2 * hw_inc))) {
+	if ((accRatio > 1.0 + 1.0/(2 * hw_inc)) ||
+			(accRatio < 1.0 - 1.0/(2 * hw_inc))) {
 		return -EINVAL;
 	}
 
 	/* Save new ratio. */
-	context->clk_ratio = ratio;
+	context->clk_ratio = accRatio;
 
-	if (ratio < 1.0) {
+	if (accRatio < 1.0) {
 		corr = hw_inc - 1;
-		val = 1.0 / (hw_inc * (1.0 - ratio));
-	} else if (ratio > 1.0) {
+		val = 1.0 / (hw_inc * (1.0 - accRatio));
+	} else if (accRatio > 1.0) {
 		corr = hw_inc + 1;
-		val = 1.0 / (hw_inc * (ratio-1.0));
+		val = 1.0 / (hw_inc * (accRatio-1.0));
 	} else {
 		val = 0;
 		corr = hw_inc;
@@ -1614,8 +1615,8 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
-	printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
-
+	//printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
+	printk("\nratio: %f, accRatio: %lf", ratio, accRatio);
 	return 0;
 }
 

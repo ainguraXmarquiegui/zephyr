@@ -826,12 +826,11 @@ static void gptp_update_local_port_clock(void)
 		}
 
 		ptp_clock_set(clk, &tm);
-
+		printk("set gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
 	skip_clock_set:
 		irq_unlock(key);
-		printk("set gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
 	} else {
-		printk("adj gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
+		//printk("adj gptp diff: %lld.%lld\n", second_diff, nanosecond_diff);
 		if (nanosecond_diff < -200) {
 			nanosecond_diff = -200;
 		} else if (nanosecond_diff > 200) {
