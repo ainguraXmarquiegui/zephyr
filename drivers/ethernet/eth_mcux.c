@@ -1567,7 +1567,7 @@ static inline int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 	return ret;
 }
 
-static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
+static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ratio)
 {
 	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	struct ptp_context *ptp_context = dev->data;
@@ -1617,7 +1617,7 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
 	//printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
-	printk("\nratio: %f, accRatio: %lf", ratio, accRatio);
+	printk("\nratio: %lf, accRatio: %lf\n", ratio, accRatioo);
 	return 0;
 }
 
