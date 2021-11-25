@@ -788,24 +788,13 @@ static int eth_rx(struct eth_context *context)
 	if (eth_get_ptp_data(get_iface(context, vlan_tag), pkt)) {
 		ENET_Ptp1588GetTimerNoIrqDisable(context->base, &context->enet_handle,
 					&ptpTimeData);
-		/* If latest timestamp reloads after getting from Rx BD,
-		 * then second - 1 to make sure the actual Rx timestamp is
-		 * accurate
-		 */
-		if ((ptpTimeData.nanosecond < ts) && (ptpTimeData.second > 0)) {
-			ptpTimeData.second--;
-		}
 
 		pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
-		//pkt->timestamp.nanosecond = ts;
 		pkt->timestamp.second = ptpTimeData.second;
 	} else {
 		/* Invalid value. */
 		pkt->timestamp.nanosecond = UINT32_MAX;
 		pkt->timestamp.second = UINT64_MAX;
-	}
-	if (ts > NSEC_PER_SEC) {
-		printk("XXX ts: %u\n", ts);
 	}
 #endif /* CONFIG_PTP_CLOCK_MCUX */
 
@@ -899,7 +888,7 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 		/* Time stamp event.  */
 		/* Reset periodic timer to default value. */
 		//printk("ATPER reset to 1s\n");
-		//context->base->ATPER = NSEC_PER_SEC;
+		context->base->ATPER = NSEC_PER_SEC;
 		break;
 	case kENET_TimeStampCaptureEvent:
 		break;
@@ -1534,7 +1523,7 @@ static inline int ptp_clock_mcux_set(const struct device *dev,
 	// Reset Ratio
 	context->clk_ratio = 1.0;
 	/* Reset periodic timer to default value. */
-	//context->base->ATPER = NSEC_PER_SEC;
+	context->base->ATPER = NSEC_PER_SEC;
 	return 0;
 }
 
@@ -1554,8 +1543,6 @@ static inline int ptp_clock_mcux_get(const struct device *dev,
 
 static inline int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 {
-	// XXX - DISABLE THIS FUNCTION FOR TEST PURPOSES
-	return 0;
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	int key, ret;
@@ -1588,7 +1575,7 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ra
 	int corr;
 	int32_t mul;
 	double val;
-	double accRatio, appRatio;
+	double accRatio;
 
 	/* No change needed. */
 	if (ratio == 1.0) {
@@ -1596,24 +1583,22 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ra
 	}
 
 	accRatio = ratio * context->clk_ratio;
-	appRatio = 1.5 * accRatio - 0.5;
 
 	/* Limit possible ratio. */
-	if ((appRatio > 1.0 + 1.0/(2 * hw_inc)) ||
-			(appRatio < 1.0 - 1.0/(2 * hw_inc))) {
-		printk ("XXX RATIO OUT OF RANGE\n");
+	if ((accRatio > 1.0 + 1.0/(2 * hw_inc)) ||
+			(accRatio < 1.0 - 1.0/(2 * hw_inc))) {
 		return -EINVAL;
 	}
 
 	/* Save new ratio. */
 	context->clk_ratio = accRatio;
 
-	if (appRatio < 1.0) {
+	if (accRatio < 1.0) {
 		corr = hw_inc - 1;
-		val = 1.0 / (hw_inc * (1.0 - appRatio));
-	} else if (appRatio > 1.0) {
+		val = 1.0 / (hw_inc * (1.0 - accRatio));
+	} else if (accRatio > 1.0) {
 		corr = hw_inc + 1;
-		val = 1.0 / (hw_inc * (appRatio-1.0));
+		val = 1.0 / (hw_inc * (accRatio-1.0));
 	} else {
 		val = 0;
 		corr = hw_inc;
@@ -1632,7 +1617,7 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ra
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
 	//printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
-	printk("\nratio: %lf, accRatio: %lf, appRatio: %lf\n", ratio, accRatio, appRatio);
+	printk("\nratio: %lf, accRatio: %lf\n", ratio, accRatioo);
 	return 0;
 }
 
