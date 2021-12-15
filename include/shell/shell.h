@@ -659,7 +659,7 @@ BUILD_ASSERT((sizeof(struct shell_backend_ctx_flags) == sizeof(uint32_t)),
  * @internal @brief Union for internal shell usage.
  */
 union shell_backend_cfg {
-	uint32_t value;
+	atomic_t value;
 	struct shell_backend_config_flags flags;
 };
 
@@ -902,8 +902,9 @@ int shell_stop(const struct shell *shell);
  * @param[in] fmt	Format string.
  * @param[in] ...	List of parameters to print.
  */
-void shell_fprintf(const struct shell *shell, enum shell_vt100_color color,
-		   const char *fmt, ...);
+void __printf_like(3, 4) shell_fprintf(const struct shell *shell,
+				       enum shell_vt100_color color,
+				       const char *fmt, ...);
 
 /**
  * @brief vprintf-like function which sends formatted data stream to the shell.

@@ -415,7 +415,7 @@ void le_phy_updated(struct bt_conn *conn,
 }
 #endif
 
-BT_CONN_CB_DEFINE(conn_callbacks) = {
+static struct bt_conn_cb conn_callbacks = {
 	.connected = connected,
 	.disconnected = disconnected,
 	.le_param_req = le_param_req,
@@ -573,6 +573,8 @@ static void bt_ready(int err)
 
 #if defined(CONFIG_BT_CONN)
 	default_conn = NULL;
+
+	bt_conn_cb_register(&conn_callbacks);
 #endif /* CONFIG_BT_CONN */
 
 #if defined(CONFIG_BT_PER_ADV_SYNC)
@@ -1670,7 +1672,7 @@ static int cmd_per_adv_sync_delete(const struct shell *sh, size_t argc,
 	}
 
 	if (index >= ARRAY_SIZE(per_adv_syncs)) {
-		shell_error(sh, "Maximum index is %u but %u was requested",
+		shell_error(sh, "Maximum index is %ld but %d was requested",
 			    ARRAY_SIZE(per_adv_syncs) - 1, index);
 	}
 
@@ -1807,7 +1809,7 @@ static int cmd_per_adv_sync_transfer(const struct shell *sh, size_t argc,
 	}
 
 	if (index >= ARRAY_SIZE(per_adv_syncs)) {
-		shell_error(sh, "Maximum index is %u but %u was requested",
+		shell_error(sh, "Maximum index is %ld but %d was requested",
 			    ARRAY_SIZE(per_adv_syncs) - 1, index);
 	}
 

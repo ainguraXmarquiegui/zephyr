@@ -38,7 +38,16 @@
 
 #define BIG_HEAP_SZ MIN(256 * 1024, MEMSZ / 3)
 #define SMALL_HEAP_SZ MIN(BIG_HEAP_SZ, 2048)
+
+/* With enabling SYS_HEAP_RUNTIME_STATS, the size of struct z_heap
+ * will increase 16 bytes on 64 bit CPU.
+ */
+#ifdef CONFIG_SYS_HEAP_RUNTIME_STATS
+#define SOLO_FREE_HEADER_HEAP_SZ (80)
+#else
 #define SOLO_FREE_HEADER_HEAP_SZ (64)
+#endif
+
 #define SCRATCH_SZ (sizeof(heapmem) / 2)
 
 /* The test memory.  Make them pointer arrays for robust alignment
@@ -209,6 +218,11 @@ static void test_big_heap(void)
 {
 	struct sys_heap heap;
 	struct z_heap_stress_result result;
+
+	if (IS_ENABLED(CONFIG_SYS_HEAP_SMALL_ONLY)) {
+		TC_PRINT("big heap support is disabled\n");
+		ztest_test_skip();
+	}
 
 	TC_PRINT("Testing big (%d byte) heap\n", (int) BIG_HEAP_SZ);
 

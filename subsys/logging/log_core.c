@@ -85,7 +85,7 @@ static bool backend_attached;
 static atomic_t buffered_cnt;
 static atomic_t dropped_cnt;
 static k_tid_t proc_tid;
-static uint32_t log_strdup_in_use;
+static atomic_t log_strdup_in_use;
 static uint32_t log_strdup_max;
 static uint32_t log_strdup_longest;
 static struct k_timer log_process_thread_timer;
@@ -538,26 +538,23 @@ static log_timestamp_t default_lf_get_timestamp(void)
 void log_core_init(void)
 {
 	uint32_t freq;
+	log_timestamp_get_t _timestamp_func;
 
 	panic_mode = false;
 	dropped_cnt = 0;
 
 	/* Set default timestamp. */
 	if (sys_clock_hw_cycles_per_sec() > 1000000) {
-		timestamp_func = default_lf_get_timestamp;
+		_timestamp_func = default_lf_get_timestamp;
 		freq = 1000U;
 	} else {
-		timestamp_func = default_get_timestamp;
+		_timestamp_func = default_get_timestamp;
 		freq = sys_clock_hw_cycles_per_sec();
 	}
 
-	log_output_timestamp_freq_set(freq);
+	log_set_timestamp_func(_timestamp_func, freq);
 
 	if (IS_ENABLED(CONFIG_LOG2)) {
-		log_set_timestamp_func(default_get_timestamp,
-			IS_ENABLED(CONFIG_LOG_TIMESTAMP_64BIT) ?
-				CONFIG_SYS_CLOCK_TICKS_PER_SEC :
-			sys_clock_hw_cycles_per_sec());
 		if (IS_ENABLED(CONFIG_LOG2_MODE_DEFERRED)) {
 			z_log_msg2_init();
 		}
@@ -846,6 +843,7 @@ uint32_t z_vrfy_log_buffered_cnt(void)
 void z_log_dropped(void)
 {
 	atomic_inc(&dropped_cnt);
+	atomic_dec(&buffered_cnt);
 }
 
 uint32_t z_log_dropped_read_and_clear(void)
@@ -939,7 +937,7 @@ void z_log_free(void *str)
 	if (atomic_dec(&dup->refcount) == 1) {
 		k_mem_slab_free(&log_strdup_pool, (void **)&dup);
 		if (IS_ENABLED(CONFIG_LOG_STRDUP_POOL_PROFILING)) {
-			atomic_dec((atomic_t *)&log_strdup_in_use);
+			atomic_dec(&log_strdup_in_use);
 		}
 	}
 }

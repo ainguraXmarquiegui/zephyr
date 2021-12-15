@@ -25,7 +25,7 @@
 K_THREAD_STACK_DEFINE(rx_thread_stack, RX_THREAD_STACK_SIZE);
 K_THREAD_STACK_DEFINE(poll_state_stack, STATE_POLL_THREAD_STACK_SIZE);
 
-const struct device *can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_can_primary));
+const struct device *can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 struct gpio_dt_spec led = GPIO_DT_SPEC_GET_OR(DT_ALIAS(led0), gpios, {0});
 
 struct k_thread rx_thread_data;
@@ -218,7 +218,7 @@ void main(void)
 
 	ret = can_attach_workq(can_dev, &k_sys_work_q, &rx_work, change_led,
 			       NULL, &change_led_filter);
-	if (ret == CAN_NO_FREE_FILTER) {
+	if (ret == -ENOSPC) {
 		printk("Error, no filter available!\n");
 		return;
 	}

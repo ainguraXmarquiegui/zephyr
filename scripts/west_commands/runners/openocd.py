@@ -27,6 +27,7 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
 
     def __init__(self, cfg, pre_init=None, reset_halt_cmd=DEFAULT_OPENOCD_RESET_HALT_CMD,
                  pre_load=None, load_cmd=None, verify_cmd=None, post_verify=None,
+                 do_verify=False, do_verify_only=False,
                  tui=None, config=None, serial=None, use_elf=None,
                  no_halt=False, no_init=False, no_targets=False,
                  tcl_port=DEFAULT_OPENOCD_TCL_PORT,
@@ -35,16 +36,22 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
                  gdb_init=None, no_load=False):
         super().__init__(cfg)
 
+        support = path.join(cfg.board_dir, 'support')
+
         if not config:
-            default = path.join(cfg.board_dir, 'support', 'openocd.cfg')
+            default = path.join(support, 'openocd.cfg')
             if path.exists(default):
                 config = [default]
         self.openocd_config = config
 
         search_args = []
+        if path.exists(support):
+            search_args.append('-s')
+            search_args.append(support)
+
         if self.openocd_config is not None:
             for i in self.openocd_config:
-                if path.exists(i):
+                if path.exists(i) and not path.samefile(path.dirname(i), support):
                     search_args.append('-s')
                     search_args.append(path.dirname(i))
 
@@ -61,6 +68,8 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
         self.load_cmd = load_cmd
         self.verify_cmd = verify_cmd
         self.post_verify = post_verify or []
+        self.do_verify = do_verify or False
+        self.do_verify_only = do_verify_only or False
         self.tcl_port = tcl_port
         self.telnet_port = telnet_port
         self.gdb_port = gdb_port
@@ -105,6 +114,10 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
         parser.add_argument('--cmd-post-verify', action='append',
                             help='''Command to run after verification;
                             may be given multiple times''')
+        parser.add_argument('--verify', action='store_true',
+                            help='if given, verify after flash')
+        parser.add_argument('--verify-only', action='store_true',
+                            help='if given, do verify and verify only. No flashing')
 
         # Options for debugging:
         parser.add_argument('--tui', default=False, action='store_true',
@@ -134,6 +147,7 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
             pre_init=args.cmd_pre_init, reset_halt_cmd=args.cmd_reset_halt,
             pre_load=args.cmd_pre_load, load_cmd=args.cmd_load,
             verify_cmd=args.cmd_verify, post_verify=args.cmd_post_verify,
+            do_verify=args.verify, do_verify_only=args.verify_only,
             tui=args.tui, config=args.config, serial=args.serial,
             use_elf=args.use_elf, no_halt=args.no_halt, no_init=args.no_init,
             no_targets=args.no_targets, tcl_port=args.tcl_port,
@@ -255,12 +269,24 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
             pre_init_cmd.append("-c")
             pre_init_cmd.append(i)
 
+        load_image = []
+        if not self.do_verify_only:
+            load_image = ['-c', 'load_image ' + self.elf_name]
+
+        verify_image = []
+        if self.do_verify or self.do_verify_only:
+            verify_image = ['-c', 'verify_image ' + self.elf_name]
+
+        prologue = ['-c', 'resume ' + ep_addr,
+                    '-c', 'shutdown']
+
         cmd = (self.openocd_cmd + self.serial + self.cfg_cmd +
                pre_init_cmd + self.init_arg + self.targets_arg +
-               ['-c', self.reset_halt_cmd,
-                '-c', 'load_image ' + self.elf_name,
-                '-c', 'resume ' + ep_addr,
-                '-c', 'shutdown'])
+               ['-c', self.reset_halt_cmd] +
+               load_image +
+               verify_image +
+               prologue)
+
         self.check_call(cmd)
 
     def do_attach_debug(self, command, **kwargs):
@@ -278,21 +304,21 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
             pre_init_cmd.append("-c")
             pre_init_cmd.append("$_TARGETNAME configure -rtos Zephyr")
 
-        server_cmd = (self.openocd_cmd + self.serial +
+        server_cmd = (self.openocd_cmd + self.serial + self.cfg_cmd +
                       ['-c', 'tcl_port {}'.format(self.tcl_port),
                        '-c', 'telnet_port {}'.format(self.telnet_port),
                        '-c', 'gdb_port {}'.format(self.gdb_port)] +
                       pre_init_cmd + self.init_arg + self.targets_arg +
-                      self.halt_arg + self.cfg_cmd)
+                      self.halt_arg)
         gdb_cmd = (self.gdb_cmd + self.tui_arg +
-                   ['-ex', 'target remote :{}'.format(self.gdb_port),
+                   ['-ex', 'target extended-remote :{}'.format(self.gdb_port),
                     self.elf_name])
         if command == 'debug':
             gdb_cmd.extend(self.load_arg)
-
-        for i in self.gdb_init:
-            gdb_cmd.append("-ex")
-            gdb_cmd.append(i)
+        if self.gdb_init is not None:
+            for i in self.gdb_init:
+                gdb_cmd.append("-ex")
+                gdb_cmd.append(i)
 
         self.require(gdb_cmd[0])
         self.print_gdbserver_message()

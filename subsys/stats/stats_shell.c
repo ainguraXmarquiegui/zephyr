@@ -25,7 +25,7 @@ static int stats_cb(struct stats_hdr *hdr, void *arg, const char *name, uint16_t
 		val = *(uint64_t *)(addr);
 		break;
 	}
-	shell_print(sh, "\t%s (offset: %u, addr: %p): %llu", name, off, addr, val);
+	shell_print(sh, "\t%s (offset: %u, addr: %p): %" PRIu64, name, off, addr, val);
 	return 0;
 }
 
@@ -33,7 +33,7 @@ static int stats_group_cb(struct stats_hdr *hdr, void *arg)
 {
 	struct shell *sh = arg;
 
-	shell_print(sh, "Stats Group %s (hdr addr: %x)", hdr->s_name, (void *)hdr);
+	shell_print(sh, "Stats Group %s (hdr addr: %p)", hdr->s_name, (void *)hdr);
 	return stats_walk(hdr, stats_cb, arg);
 }
 

@@ -10,6 +10,7 @@ API Reference
    audio/index.rst
    misc/notify.rst
    bluetooth/index.rst
+   canbus/index.rst
    crypto/index.rst
    devicetree/index.rst
    drivers/index.rst
@@ -27,7 +28,8 @@ API Reference
    modbus/index.rst
    networking/index.rst
    peripherals/index.rst
-   power_management/index.rst
+   pinctrl/index.rst
+   pm/index.rst
    random/index.rst
    resource_management/index.rst
    shell/index.rst
