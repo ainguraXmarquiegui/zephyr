@@ -1658,7 +1658,7 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ra
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
 	//printk(" rate_adj. rate: %f, inc_corr: %d, atcor: %u\n", ratio, corr, mul);
-	printk("\nratio: %lf, accRatio: %lf\n", ratio, accRatioo);
+	printk("\nratio: %lf, accRatio: %lf\n", ratio, accRatio);
 	return 0;
 }
 
