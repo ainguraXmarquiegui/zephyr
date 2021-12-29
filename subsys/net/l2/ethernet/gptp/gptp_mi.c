@@ -785,13 +785,12 @@ static void gptp_update_local_port_clock(void)
 
 
 	ptp_clock_rate_adjust(clk, port_ds->neighbor_rate_ratio);
-#if 0
 	/* If time difference is too high, set the clock value.
 	 * Otherwise, adjust it.
 	 */
 	if (second_diff || (second_diff == 0 &&
-			    (nanosecond_diff < -5000 ||
-			     nanosecond_diff > 5000))) {
+			    (nanosecond_diff < -500000 ||
+			     nanosecond_diff > 500000))) {
 		bool underflow = false;
 
 		key = irq_lock();
@@ -835,26 +834,19 @@ static void gptp_update_local_port_clock(void)
 	skip_clock_set:
 		irq_unlock(key);
 	} else {
+#if 1
+		if ((nanosecond_diff > -200) && (nanosecond_diff < 200)) {
+			nanosecond_diff = 0;
+		}
+#else
 		if (nanosecond_diff < -200) {
 			nanosecond_diff = -200;
 		} else if (nanosecond_diff > 200) {
 			nanosecond_diff = 200;
 		}
-
-		ptp_clock_adjust(clk, nanosecond_diff);
-	}
-#else
-	uint64_t gptp_sync_receipt_time_ns = global_ds->sync_receipt_time.second *NSEC_PER_SEC \
-				+ global_ds->sync_receipt_time.fract_nsecond / GPTP_POW2_16;
-	int64_t offset_ns = gptp_sync_receipt_time_ns - global_ds->sync_receipt_local_time;
-	
-	if (offset_ns < -200 || offset_ns > 200) {
-		ptp_clock_adjust(clk, offset_ns);
-	} else {
-		ptp_clock_adjust(clk, 0);
-	}
-
 #endif
+		//ptp_clock_adjust(clk, nanosecond_diff);
+	}
 }
 #endif /* CONFIG_NET_GPTP_USE_DEFAULT_CLOCK_UPDATE */
 

@@ -47,6 +47,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 #endif
 #include <devicetree.h>
 
+#include <stdio.h>
 #include "eth.h"
 
 #define FREESCALE_OUI_B0 0x00
@@ -825,13 +826,33 @@ static int eth_rx(struct eth_context *context)
 	   use MAC timestamp
 	 */
 #if defined(CONFIG_PTP_CLOCK_MCUX)
-	{
+#ifdef HAKEHUANG
+{
+	uint64_t ns;
+
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+	ns = hw_clock_cycles_to_time(context, ts);
+	ns_to_net_ptp_time(&pkt->timestamp, ns);
+	k_mutex_unlock(&context->ptp_mutex);
+}
+#else
+	if (eth_get_ptp_data(get_iface(context, vlan_tag), pkt)) {
+		enet_ptp_time_t ptpTimeData;
+		k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+		ENET_Ptp1588GetTimerNoIrqDisable(context->base, &context->enet_handle,
+					&ptpTimeData);
+
+		pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
+		pkt->timestamp.second = ptpTimeData.second;
+		k_mutex_unlock(&context->ptp_mutex);
+	} else {
 		uint64_t ns;
 		k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 		ns = hw_clock_cycles_to_time(context, ts);
 		ns_to_net_ptp_time(&pkt->timestamp, ns);
 		k_mutex_unlock(&context->ptp_mutex);
 	}
+#endif
 #endif
 
 	iface = get_iface(context, vlan_tag);
@@ -867,12 +888,32 @@ static inline void ts_register_tx_event(struct eth_context *context,
 	if (pkt && atomic_get(&pkt->atomic_ref) > 0) {
 		if (eth_get_ptp_data(net_pkt_iface(pkt), pkt)) {
 			if (frameinfo->isTsAvail) {
+#ifdef HAKEHUANG
 				uint64_t ns;
 
 				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 				ns = hw_clock_cycles_to_time(context,
 						frameinfo->timeStamp.nanosecond);
 				ns_to_net_ptp_time(&pkt->timestamp, ns);
+#elif 1
+				enet_ptp_time_t ptpTimeData;
+				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+				ENET_Ptp1588GetTimerNoIrqDisable(context->base, &context->enet_handle,
+							&ptpTimeData);
+
+				pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
+				pkt->timestamp.second = ptpTimeData.second;
+
+#else
+				// ORIGINAL
+				pkt->timestamp.nanosecond =
+					frameinfo->timeStamp.nanosecond;
+				pkt->timestamp.second =
+					frameinfo->timeStamp.second;
+
+				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+#endif
+
 				net_if_add_tx_timestamp(pkt);
 				k_mutex_unlock(&context->ptp_mutex);
 			}
@@ -1552,9 +1593,63 @@ struct ptp_context {
 
 static struct ptp_context ptp_mcux_0_context;
 
+static int ptp_clock_mcux_set(const struct device *dev,
+			      struct net_ptp_time *tm)
+{
+#ifdef HAKEHUANG
+	struct ptp_context *ptp_context = dev->data;
+	struct eth_context *context = ptp_context->eth_context;
+	struct net_ptp_time enet_time;
+	uint64_t req_ns;
+	uint64_t current_ns;
+
+	enet_ptp_time_t hw_enet_time;
+
+	hw_enet_time.second = tm->second;
+	hw_enet_time.nanosecond = tm->nanosecond;
+
+	ENET_Ptp1588SetTimer(context->base, &context->enet_handle, &hw_enet_time);
+
+	context->ptp_cycles = 0;
+	context->last_cycles = 0;
+	context->offset = 0;
+
+	ptp_clock_mcux_get(dev, &enet_time);
+	req_ns = tm->nanosecond + (NSEC_PER_SEC) * tm->second;
+	current_ns = enet_time.nanosecond + (NSEC_PER_SEC * enet_time.second);
+
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+	context->offset += req_ns - current_ns;
+	k_mutex_unlock(&context->ptp_mutex);
+#else
+	struct ptp_context *ptp_context = dev->data;
+	struct eth_context *context = ptp_context->eth_context;
+	enet_ptp_time_t enet_time;
+
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+	enet_time.second = tm->second;
+	enet_time.nanosecond = tm->nanosecond;
+
+	ENET_Ptp1588SetTimer(context->base, &context->enet_handle, &enet_time);
+
+	// Disable timer adjust
+	ENET_Ptp1588AdjustTimer(context->base, 40, 0);
+	// Reset Ratio
+	context->clk_ratio = 1.0;
+	/* Reset periodic timer to default value. */
+	context->base->ATPER = NSEC_PER_SEC;
+	k_mutex_unlock(&context->ptp_mutex);
+#endif
+
+	printk("mcux_set\n");
+
+	return 0;
+}
+
 static int ptp_clock_mcux_get(const struct device *dev,
 			      struct net_ptp_time *tm)
 {
+#ifdef HAKEHUANG
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	enet_ptp_time_t enet_time;
@@ -1571,33 +1666,22 @@ static int ptp_clock_mcux_get(const struct device *dev,
 	time_ns = context->ptp_cycles + context->offset;
 	ns_to_net_ptp_time(tm, time_ns);
 	k_mutex_unlock(&context->ptp_mutex);
-
-	return 0;
-}
-
-
-static int ptp_clock_mcux_set(const struct device *dev,
-			      struct net_ptp_time *tm)
-{
+#else
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
-	struct net_ptp_time enet_time;
-	uint64_t req_ns;
-	uint64_t current_ns;
+	enet_ptp_time_t enet_time;
 
-	ptp_clock_mcux_get(dev, &enet_time);
-	req_ns = tm->nanosecond + (NSEC_PER_SEC) * tm->second;
-	current_ns = enet_time.nanosecond + (NSEC_PER_SEC * enet_time.second);
+	ENET_Ptp1588GetTimerNoIrqDisable(context->base, &context->enet_handle, &enet_time);
 
-	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
-	context->offset += req_ns - current_ns;
-	k_mutex_unlock(&context->ptp_mutex);
-
+	tm->second = enet_time.second;
+	tm->nanosecond = enet_time.nanosecond;
+#endif
 	return 0;
 }
 
 static int ptp_clock_mcux_adjust(const struct device *dev, int64_t increment)
 {
+#ifdef HAKEHUANG
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 
@@ -1606,42 +1690,67 @@ static int ptp_clock_mcux_adjust(const struct device *dev, int64_t increment)
 	k_mutex_unlock(&context->ptp_mutex);
 
 	return 0;
+#else
+	struct ptp_context *ptp_context = dev->data;
+	struct eth_context *context = ptp_context->eth_context;
+	int key, ret;
+
+	if ((increment <= (int32_t)(-NSEC_PER_SEC)) ||
+			(increment >= (int32_t)NSEC_PER_SEC)) {
+		ret = -EINVAL;
+	} else {
+			key = irq_lock();
+			if (context->base->ATPER != NSEC_PER_SEC) {
+					ret = -EBUSY;
+			} else {
+					/* Seconds counter is handled by software. Change the
+						* period of one software second to adjust the clock.
+						*/
+					context->base->ATPER = NSEC_PER_SEC - increment;
+					ret = 0;
+			}
+			irq_unlock(key);
+			printk("Adj: %lld\n", increment);
+	}
+
+	return ret;
+#endif
 }
 
-static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
+static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 {
 	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	int corr;
 	int32_t mul;
-	float val;
+	double val;
+	double accRatio;
 
 	/* No change needed. */
-	if ((ratio > 1.0 && ratio - 1.0 < 0.00000001) ||
-	   (ratio < 1.0 && 1.0 - ratio < 0.00000001)) {
+	if ((ratio > 1.0f && ratio - 1.0 < 0.00000001f) ||
+	   (ratio < 1.0f && 1.0f - ratio < 0.00000001f)) {
 		return 0;
 	}
 
-	ratio *= context->clk_ratio;
+	accRatio = ratio * context->clk_ratio;
 
 	/* Limit possible ratio. */
-	if ((ratio > 1.0 + 1.0/(2 * hw_inc)) ||
-			(ratio < 1.0 - 1.0/(2 * hw_inc))) {
+	if ((accRatio > 1.0f + 1.0f/(2 * hw_inc)) ||
+			(accRatio < 1.0f - 1.0f/(2 * hw_inc))) {
 		LOG_INF("ratial is invalid");
 		return -EINVAL;
 	}
 
-	printf("ratio is %f\r\n", ratio);
 	/* Save new ratio. */
-	context->clk_ratio = ratio;
+	context->clk_ratio = accRatio;
 
-	if (ratio < 1.0) {
+	if (accRatio < 1.0f) {
 		corr = hw_inc - 1;
-		val = 1.0 / ( hw_inc * (1.0 - ratio));
-	} else if (ratio > 1.0) {
+		val = 1.0f / (hw_inc * (1.0f - accRatio));
+	} else if (accRatio > 1.0f) {
 		corr = hw_inc + 1;
-		val = 1.0 / (hw_inc * (ratio-1.0));
+		val = 1.0f / (hw_inc * (accRatio-1.0f));
 	} else {
 		val = 0;
 		corr = hw_inc;
@@ -1657,14 +1766,12 @@ static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
 	}
 	printk("hw_inc is %u\r\n", hw_inc);
 	printk("mul is %u\r\n", mul);
-	#if 0
-	corr = hw_inc;
-	mul =0;
-	#endif
+
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
 
+	printf("ratio: %lf, accRatio: %lf\n\n", ratio, accRatio);
 	return 0;
 }
 
@@ -1675,6 +1782,7 @@ static const struct ptp_clock_driver_api api = {
 	.rate_adjust = ptp_clock_mcux_rate_adjust,
 };
 
+#ifdef HAKEHUANG
 static void eth_ptp_thread(void *arg1, void *unused1, void *unused2)
 {
 	const struct device *port = (struct device *)arg1;
@@ -1690,6 +1798,7 @@ static void eth_ptp_thread(void *arg1, void *unused1, void *unused2)
 		k_msleep(200);
 	}
 }
+#endif
 
 static int ptp_mcux_init(const struct device *port)
 {
@@ -1703,12 +1812,14 @@ static int ptp_mcux_init(const struct device *port)
 	context->last_cycles = 0;
 	context->offset = 0;
 
+#ifdef HAKEHUANG
 	k_thread_create(&context->ptp_thread, context->ptp_thread_stack,
 		K_KERNEL_STACK_SIZEOF(context->ptp_thread_stack),
 		eth_ptp_thread, (void *)port, NULL, NULL,
 		K_PRIO_PREEMPT(CONFIG_PTP_UPDATE_THREAD_PRI),
 		0, K_NO_WAIT);
 	k_thread_name_set(&context->ptp_thread, "mcux_eth_ptp");
+#endif
 
 	return 0;
 }
