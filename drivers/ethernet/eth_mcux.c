@@ -835,7 +835,7 @@ static int eth_rx(struct eth_context *context)
 	ns_to_net_ptp_time(&pkt->timestamp, ns);
 	k_mutex_unlock(&context->ptp_mutex);
 }
-#else
+#elif 0
 	if (eth_get_ptp_data(get_iface(context, vlan_tag), pkt)) {
 		enet_ptp_time_t ptpTimeData;
 		k_mutex_lock(&context->ptp_mutex, K_FOREVER);
@@ -846,12 +846,21 @@ static int eth_rx(struct eth_context *context)
 		pkt->timestamp.second = ptpTimeData.second;
 		k_mutex_unlock(&context->ptp_mutex);
 	} else {
-		uint64_t ns;
-		k_mutex_lock(&context->ptp_mutex, K_FOREVER);
-		ns = hw_clock_cycles_to_time(context, ts);
-		ns_to_net_ptp_time(&pkt->timestamp, ns);
-		k_mutex_unlock(&context->ptp_mutex);
+		/* Invalid value. */
+		pkt->timestamp.nanosecond = UINT32_MAX;
+		pkt->timestamp.second = UINT64_MAX;
 	}
+#else
+    enet_ptp_time_t ptpTime;
+
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+    ENET_Ptp1588GetTimer(context->base, &context->enet_handle, &ptpTime);
+
+	pkt->timestamp.second = ptpTime.second;
+
+	// Take the received timestamp, and use it as is
+	pkt->timestamp.nanosecond = ts;
+	k_mutex_unlock(&context->ptp_mutex);
 #endif
 #endif
 
@@ -895,7 +904,7 @@ static inline void ts_register_tx_event(struct eth_context *context,
 				ns = hw_clock_cycles_to_time(context,
 						frameinfo->timeStamp.nanosecond);
 				ns_to_net_ptp_time(&pkt->timestamp, ns);
-#elif 1
+#elif 0
 				enet_ptp_time_t ptpTimeData;
 				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 				ENET_Ptp1588GetTimerNoIrqDisable(context->base, &context->enet_handle,
@@ -903,7 +912,14 @@ static inline void ts_register_tx_event(struct eth_context *context,
 
 				pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
 				pkt->timestamp.second = ptpTimeData.second;
+#elif 1
+				enet_ptp_time_t ptpTimeData;
+				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+				ENET_Ptp1588GetATSTMP(context->base, &context->enet_handle,
+							&ptpTimeData);
 
+				pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
+				pkt->timestamp.second = ptpTimeData.second;
 #else
 				// ORIGINAL
 				pkt->timestamp.nanosecond =

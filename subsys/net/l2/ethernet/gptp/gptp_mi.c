@@ -834,7 +834,7 @@ static void gptp_update_local_port_clock(void)
 	skip_clock_set:
 		irq_unlock(key);
 	} else {
-#if 1
+#if 0
 		if ((nanosecond_diff > -200) && (nanosecond_diff < 200)) {
 			nanosecond_diff = 0;
 		}
@@ -845,7 +845,7 @@ static void gptp_update_local_port_clock(void)
 			nanosecond_diff = 200;
 		}
 #endif
-		//ptp_clock_adjust(clk, nanosecond_diff);
+		ptp_clock_adjust(clk, nanosecond_diff);
 	}
 }
 #endif /* CONFIG_NET_GPTP_USE_DEFAULT_CLOCK_UPDATE */
