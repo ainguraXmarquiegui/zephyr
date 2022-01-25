@@ -266,6 +266,12 @@ static void gptp_md_compute_pdelay_rate_ratio(int port)
 				(ingress_tstamp -
 				 state->ini_resp_ingress_tstamp);
 
+#if 0
+			printf("nrr: %lf\n", (neighbor_rate_ratio*100000000));
+			printk(", cpt: %llu, ppt: %llu | cit: %llu, pit: %llu\n", 
+				resp_evt_tstamp, state->ini_resp_evt_tstamp, ingress_tstamp, state->ini_resp_ingress_tstamp);
+#endif
+
 			/* Measure the ratio with the previously sent response.
 			 */
 			state->ini_resp_ingress_tstamp = ingress_tstamp;

@@ -74,6 +74,14 @@ enum eth_mcux_phy_state {
 	eth_mcux_phy_state_closing
 };
 
+enum adjust_state {
+	eth_mcux_set, // Not in use until we refactor gptp_update_local_port_clock
+	eth_mcux_rate_measure,
+	eth_mcux_rate_adjust,
+	eth_mcux_rate_adjust_done,
+	eth_mcux_adjust
+};
+
 #if defined(CONFIG_NET_POWER_MANAGEMENT)
 extern uint32_t ENET_GetInstance(ENET_Type * base);
 static const clock_ip_name_t enet_clocks[] = ENET_CLOCKS;
@@ -130,13 +138,17 @@ struct eth_context {
 	struct net_pkt *ts_tx_pkt;
 	const struct device *ptp_clock;
 	enet_ptp_config_t ptp_config;
-	float clk_ratio;
+	double clk_ratio;
+	enum adjust_state adjState;
 	struct k_mutex ptp_mutex;
 	struct k_thread ptp_thread;
 	K_KERNEL_STACK_MEMBER(ptp_thread_stack, 1600);
 	uint64_t ptp_cycles;
 	uint32_t last_cycles;
 	uint64_t offset;
+#ifdef LASTAVAILTS
+	struct net_ptp_time lastAvailTs;
+#endif
 #endif
 	struct k_sem tx_buf_sem;
 	struct k_sem rx_thread_sem;
@@ -861,6 +873,7 @@ static int eth_rx(struct eth_context *context)
 	// Take the received timestamp, and use it as is
 	pkt->timestamp.nanosecond = ts;
 	k_mutex_unlock(&context->ptp_mutex);
+	//printf("rx ts: %u\n", pkt->timestamp.nanosecond);
 #endif
 #endif
 
@@ -912,14 +925,19 @@ static inline void ts_register_tx_event(struct eth_context *context,
 
 				pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
 				pkt->timestamp.second = ptpTimeData.second;
-#elif 1
-				enet_ptp_time_t ptpTimeData;
+#elif LASTAVAILTS
+				//enet_ptp_time_t ptpTimeData;
 				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
-				ENET_Ptp1588GetATSTMP(context->base, &context->enet_handle,
-							&ptpTimeData);
+				//ENET_Ptp1588GetATSTMP(context->base, &context->enet_handle,
+				//			&ptpTimeData);
 
-				pkt->timestamp.nanosecond = ptpTimeData.nanosecond;
-				pkt->timestamp.second = ptpTimeData.second;
+				if (context->lastAvailTs.nanosecond == UINT32_MAX) {
+					 printf("ERROR: Unable to get last transmitted frame timestamp.\n");
+				}
+				pkt->timestamp.nanosecond = context->lastAvailTs.nanosecond;
+				pkt->timestamp.second = context->lastAvailTs.second;
+				context->lastAvailTs.nanosecond = UINT32_MAX;
+        		context->lastAvailTs.second = UINT64_MAX;
 #else
 				// ORIGINAL
 				pkt->timestamp.nanosecond =
@@ -932,6 +950,7 @@ static inline void ts_register_tx_event(struct eth_context *context,
 
 				net_if_add_tx_timestamp(pkt);
 				k_mutex_unlock(&context->ptp_mutex);
+				//printf("tx ts: %u\n", pkt->timestamp.nanosecond);
 			}
 		}
 
@@ -953,6 +972,10 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 			 enet_event_t event, enet_frame_info_t *frameinfo, void *param)
 {
 	struct eth_context *context = param;
+#ifdef LASTAVAILTS	
+	uint32_t primask;
+	enet_ptp_time_t currentPTPTime;
+#endif
 
 	switch (event) {
 	case kENET_RxEvent:
@@ -979,10 +1002,37 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 	case kENET_TimeStampEvent:
 		/* Time stamp event.  */
 		/* Reset periodic timer to default value. */
-		//context->base->ATPER = NSEC_PER_SEC;
+		//printf("ATPERrst001: %u, %u\n", context->base->ATPER, context->base->ATVR);
+		context->base->ATPER = NSEC_PER_SEC;
 		break;
 	case kENET_TimeStampAvailEvent:
+#ifdef LASTAVAILTS
 		/* Time stamp available event.  */
+
+		/* Disables the interrupt. */
+		primask = DisableGlobalIRQ();
+
+		ENET_Ptp1588GetTimerNoIrqDisable(base, handle, &currentPTPTime);
+
+		/* Get PTP timer wrap event. */
+		if (0U != (base->EIR & (uint32_t)kENET_TsTimerInterrupt))
+		{
+			currentPTPTime.second++;
+		}
+
+		// Read timestamp
+		context->lastAvailTs.nanosecond = base->ATSTMP;
+
+        // If timestamp is newer than current, it must have been in the previous second
+        //if (ptpTime->nanosecond > currentPTPTime.nanosecond) {
+        //    ptpTime->second = currentPTPTime.second - 1;
+        //} else {
+            context->lastAvailTs.second = currentPTPTime.second;
+        //}
+
+		/* Enables the interrupt. */
+    	EnableGlobalIRQ(primask);
+#endif
 		break;
 	}
 }
@@ -1092,6 +1142,10 @@ static void eth_mcux_init(const struct device *dev)
 	context->ptp_config.ptp1588ClockSrc_Hz =
 					CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	context->clk_ratio = 1.0;
+	// With the current implementation of gptp_update_local_port_clock it's risky to use this
+	//context->adjState = eth_mcux_set;
+	// Use this instead
+	context->adjState = eth_mcux_rate_measure; 
 
 	ENET_Ptp1588SetChannelMode(context->base, kENET_PtpTimerChannel3,
 			kENET_PtpChannelPulseHighonCompare, true);
@@ -1130,6 +1184,11 @@ static int eth_init(const struct device *dev)
 #endif
 
 #if defined(CONFIG_PTP_CLOCK_MCUX)
+#ifdef LASTAVAILTS
+	context->lastAvailTs.nanosecond = UINT32_MAX;
+	context->lastAvailTs.second = UINT64_MAX;
+#endif
+
 	k_mutex_init(&context->ptp_mutex);
 #endif
 	k_mutex_init(&context->rx_frame_buf_mutex);
@@ -1357,7 +1416,11 @@ static void eth_mcux_common_isr(const struct device *dev)
 		ENET_ClearInterruptStatus(context->base,
 		  ~(kENET_TxBufferInterrupt | kENET_TxFrameInterrupt
 		    | kENET_RxBufferInterrupt | kENET_RxFrameInterrupt
+#ifdef LASTAVAILTS
+		    | ENET_EIR_MII_MASK));
+#else
 		    | ENET_EIR_MII_MASK | ENET_TS_INTERRUPT));
+#endif
 	}
 	irq_unlock(irq_lock_key);
 }
@@ -1652,9 +1715,12 @@ static int ptp_clock_mcux_set(const struct device *dev,
 	ENET_Ptp1588AdjustTimer(context->base, 40, 0);
 	// Reset Ratio
 	context->clk_ratio = 1.0;
+	context->adjState = eth_mcux_rate_measure;
 	/* Reset periodic timer to default value. */
+	//printf("ATPERrst002\n");
 	context->base->ATPER = NSEC_PER_SEC;
 	k_mutex_unlock(&context->ptp_mutex);
+	printf("XAXA-Set!\n");
 #endif
 
 	printk("mcux_set\n");
@@ -1706,17 +1772,21 @@ static int ptp_clock_mcux_adjust(const struct device *dev, int64_t increment)
 	k_mutex_unlock(&context->ptp_mutex);
 
 	return 0;
-#else
+#elif 0
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	int key, ret;
 
+	//return 0;
+
 	if ((increment <= (int32_t)(-NSEC_PER_SEC)) ||
 			(increment >= (int32_t)NSEC_PER_SEC)) {
+		printk("Unsupported increment\n");
 		ret = -EINVAL;
 	} else {
 			key = irq_lock();
 			if (context->base->ATPER != NSEC_PER_SEC) {
+					printk("ATPERignore: %u\n", context->base->ATPER);
 					ret = -EBUSY;
 			} else {
 					/* Seconds counter is handled by software. Change the
@@ -1724,16 +1794,99 @@ static int ptp_clock_mcux_adjust(const struct device *dev, int64_t increment)
 						*/
 					context->base->ATPER = NSEC_PER_SEC - increment;
 					ret = 0;
+					printk("ATPER: %u . Adj: %lld\n", context->base->ATPER, increment);
 			}
 			irq_unlock(key);
-			printk("Adj: %lld\n", increment);
 	}
 
 	return ret;
+#else
+	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
+	struct ptp_context *ptp_context = dev->data;
+	struct eth_context *context = ptp_context->eth_context;
+	int corr;
+	int32_t mul;
+	double val;
+	double diffRatio;
+	int64_t correction;
+
+	if (context->adjState != eth_mcux_adjust)
+	{
+		if (context->adjState == eth_mcux_rate_adjust_done)
+		{
+			context->adjState = eth_mcux_adjust;
+		}
+		return 0;
+	}
+
+#if 0
+	correction = 2.00*increment;
+	if ((correction < NSEC_PER_SEC) && (correction > -(int64_t)NSEC_PER_SEC)) {
+		diffRatio = (double)((float)NSEC_PER_SEC / ((float)NSEC_PER_SEC-(float)correction));
+	} else {
+		diffRatio = context->clk_ratio;
+	}
+
+	if (diffRatio < 1.0f) {
+		corr = hw_inc - 1;
+		val = 1.0f / (hw_inc * (1.0f - diffRatio));
+	} else if (diffRatio > 1.0f) {
+		corr = hw_inc + 1;
+		val = 1.0f / (hw_inc * (diffRatio-1.0f));
+	} else {
+		val = 0;
+		corr = hw_inc;
+	}
+
+	if (val >= INT32_MAX) {
+		/* Value is too high.
+		* It is not possible to adjust the rate of the clock.
+		*/
+		mul = 0;
+	} else {
+		mul = val;
+	}
+
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
+	k_mutex_unlock(&context->ptp_mutex);
+
+	printk("Adj d: %lld", increment);
+	printf(" r: %lf\n", (diffRatio*100000000));
+
+#else
+	int key;
+
+	if ((increment <= (int32_t)(-NSEC_PER_SEC)) ||
+			(increment >= (int32_t)NSEC_PER_SEC)) {
+		printk("Unsupported increment\n");
+	} else {
+			key = irq_lock();
+			if (context->base->ATPER != NSEC_PER_SEC) {
+					printk("ATPERignore: %u\n", context->base->ATPER);
+			} else {
+					/* Seconds counter is handled by software. Change the
+						* period of one software second to adjust the clock.
+						*/
+					context->base->ATPER = NSEC_PER_SEC - increment;
+					printk("ATPER: %u . Adj: %lld\n", context->base->ATPER, increment);
+			}
+			irq_unlock(key);
+	}
+#endif
+
+	context->adjState = eth_mcux_rate_measure;
+
+
+	return 0;
 #endif
 }
 
-static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
+/// XXX TODO: Separar nanosecond diff, y llevar un equivalente a esto al adjust. Añadir variable local al driver 
+// que haga que cuando estemos fuera de rango en el adjust se cambie el rate para minimizar el nanosecond_diff
+// Una vez en rango, activamos y pasamos a ajustar el rate
+
+static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, double ratio)
 {
 	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	struct ptp_context *ptp_context = dev->data;
@@ -1744,12 +1897,37 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 	double accRatio;
 
 	/* No change needed. */
+#if 0
 	if ((ratio > 1.0f && ratio - 1.0 < 0.00000001f) ||
 	   (ratio < 1.0f && 1.0f - ratio < 0.00000001f)) {
+		//printf("Perfect!\n");
 		return 0;
 	}
+#endif
 
-	accRatio = ratio * context->clk_ratio;
+	if ((context->adjState != eth_mcux_rate_measure) &&
+	   (context->adjState != eth_mcux_rate_adjust))
+	{
+		return 0;	
+	}
+
+	if (context->adjState == eth_mcux_rate_measure) {
+		accRatio = context->clk_ratio;
+		context->adjState = eth_mcux_rate_adjust;
+		printf("XAXA-Measure!\n");
+	} else { // eth_mcux_rate_adjust
+		context->adjState = eth_mcux_rate_adjust_done;
+
+		if (((ratio > 1.0f && ratio - 1.0 < 0.00000001f) ||
+		(ratio < 1.0f && 1.0f - ratio < 0.00000001f))) {
+			printf("SkipRateAdj!\n");
+			return 0;
+		}
+
+		//accRatio = ratio * context->clk_ratio;
+		accRatio = 1.0;
+		printf("XAXA-RateAdj!\n");
+	}
 
 	/* Limit possible ratio. */
 	if ((accRatio > 1.0f + 1.0f/(2 * hw_inc)) ||
@@ -1760,6 +1938,13 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 
 	/* Save new ratio. */
 	context->clk_ratio = accRatio;
+
+#if 0
+		if ((nanosecond_diff < NSEC_PER_SEC) && (nanosecond_diff > -NSEC_PER_SEC)) {
+			diffRatio = NSEC_PER_SEC / (NSEC_PER_SEC - nanosecond_diff);
+			accRatio = accRatio * diffRatio;
+		}
+#endif
 
 	if (accRatio < 1.0f) {
 		corr = hw_inc - 1;
@@ -1780,14 +1965,13 @@ static inline int ptp_clock_mcux_rate_adjust(const struct device *dev, float rat
 	} else {
 		mul = val;
 	}
-	printk("hw_inc is %u\r\n", hw_inc);
-	printk("mul is %u\r\n", mul);
 
 	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	ENET_Ptp1588AdjustTimer(context->base, corr, mul);
 	k_mutex_unlock(&context->ptp_mutex);
 
-	printf("ratio: %lf, accRatio: %lf\n\n", ratio, accRatio);
+	printf("appRatio: %lf\n", (accRatio*100000000));
+
 	return 0;
 }
 

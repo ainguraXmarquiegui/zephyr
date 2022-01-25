@@ -766,8 +766,6 @@ static void gptp_update_local_port_clock(void)
 		(global_ds->sync_receipt_time.fract_nsecond / GPTP_POW2_16) -
 		(global_ds->sync_receipt_local_time % NSEC_PER_SEC);
 
-	printk("XXX sdiff: %lld, nsdiff: %lld\n", second_diff, nanosecond_diff);
-
 	clk = net_eth_get_ptp_clock(GPTP_PORT_IFACE(port));
 	if (!clk) {
 		return;
@@ -789,8 +787,8 @@ static void gptp_update_local_port_clock(void)
 	 * Otherwise, adjust it.
 	 */
 	if (second_diff || (second_diff == 0 &&
-			    (nanosecond_diff < -500000 ||
-			     nanosecond_diff > 500000))) {
+			    (nanosecond_diff < -250000 ||
+			     nanosecond_diff > 250000))) {
 		bool underflow = false;
 
 		key = irq_lock();
@@ -835,18 +833,18 @@ static void gptp_update_local_port_clock(void)
 		irq_unlock(key);
 	} else {
 #if 0
-		if ((nanosecond_diff > -200) && (nanosecond_diff < 200)) {
-			nanosecond_diff = 0;
-		}
-#else
 		if (nanosecond_diff < -200) {
-			nanosecond_diff = -200;
+			nanosecond_diff = -200000;
 		} else if (nanosecond_diff > 200) {
-			nanosecond_diff = 200;
+			nanosecond_diff = -200000;
 		}
-#endif
+
 		ptp_clock_adjust(clk, nanosecond_diff);
+#elif 1
+		ptp_clock_adjust(clk, nanosecond_diff);
+#endif
 	}
+	printk("XXX sdiff: %lld, nsdiff: %lld\n\n", second_diff,nanosecond_diff);
 }
 #endif /* CONFIG_NET_GPTP_USE_DEFAULT_CLOCK_UPDATE */
 
