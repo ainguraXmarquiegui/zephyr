@@ -157,22 +157,32 @@ struct eth_context {
 #endif
 	enet_handle_t enet_handle;
 #if defined(CONFIG_PTP_CLOCK_MCUX)
+	struct net_pkt *ts_tx_pkt;
 	const struct device *ptp_clock;
 	enet_ptp_config_t ptp_config;
-	float clk_ratio;
+	double clk_ratio;
+	struct k_mutex ptp_mutex;
 #endif
 	struct k_sem tx_buf_sem;
 	phy_handle_t *phy_handle;
+	struct k_sem rx_thread_sem;
+	struct k_sem tx_thread_sem;
 	enum eth_mcux_phy_state phy_state;
 	bool enabled;
 	bool link_up;
 	uint32_t phy_addr;
+	uint32_t rx_irq_num;
+	uint32_t tx_irq_num;
 	phy_duplex_t phy_duplex;
 	phy_speed_t phy_speed;
 	uint8_t mac_addr[6];
 	void (*generate_mac)(uint8_t *);
 	struct k_work phy_work;
 	struct k_work_delayable delayed_phy_work;
+	K_KERNEL_STACK_MEMBER(rx_thread_stack, 1600);
+	struct k_thread rx_thread;
+	K_KERNEL_STACK_MEMBER(tx_thread_stack, 1600);
+	struct k_thread tx_thread;
 	/* TODO: FIXME. This Ethernet frame sized buffer is used for
 	 * interfacing with MCUX. How it works is that hardware uses
 	 * DMA scatter buffers to receive a frame, and then public
@@ -188,14 +198,11 @@ struct eth_context {
 	 * Note that we do not copy FCS into this buffer thus the
 	 * size is 1514 bytes.
 	 */
-	uint8_t frame_buf[NET_ETH_MAX_FRAME_SIZE]; /* Max MTU + ethernet header */
+	struct k_mutex tx_frame_buf_mutex;
+	struct k_mutex rx_frame_buf_mutex;
+	uint8_t * tx_frame_buf; /* Max MTU + ethernet header */
+	uint8_t * rx_frame_buf; /* Max MTU + ethernet header */
 };
-
-#if defined(CONFIG_PTP_CLOCK_MCUX)
-/* Packets to be timestamped. */
-static struct net_pkt *ts_tx_pkt[CONFIG_ETH_MCUX_TX_BUFFERS];
-static int ts_tx_rd, ts_tx_wr;
-#endif
 
 /* Use ENET_FRAME_MAX_VLANFRAMELEN for VLAN frame size
  * Use ENET_FRAME_MAX_FRAMELEN for Ethernet frame size
@@ -679,18 +686,15 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 	struct eth_context *context = dev->data;
 	uint16_t total_len = net_pkt_get_len(pkt);
 	status_t status;
-	unsigned int imask;
+
 #if defined(CONFIG_PTP_CLOCK_MCUX)
 	bool timestamped_frame;
 #endif
 
-	/* As context->frame_buf is shared resource used by both eth_tx
-	 * and eth_rx, we need to protect it with irq_lock.
-	 */
-	imask = irq_lock();
+	k_mutex_lock(&context->tx_frame_buf_mutex, K_FOREVER);
 
-	if (net_pkt_read(pkt, context->frame_buf, total_len)) {
-		irq_unlock(imask);
+	if (net_pkt_read(pkt, context->tx_frame_buf, total_len)) {
+		k_mutex_unlock(&context->tx_frame_buf_mutex);
 		return -EIO;
 	}
 
@@ -698,45 +702,41 @@ static int eth_tx(const struct device *dev, struct net_pkt *pkt)
 	timestamped_frame = eth_get_ptp_data(net_pkt_iface(pkt), pkt);
 	if (timestamped_frame) {
 		status = ENET_SendFrame(context->base, &context->enet_handle,
-					  context->frame_buf, total_len, RING_ID, true, NULL);
-
+					  context->tx_frame_buf, total_len, RING_ID, true, NULL);
 		if (!status) {
-			ts_tx_pkt[ts_tx_wr] = net_pkt_ref(pkt);
+			context->ts_tx_pkt = net_pkt_ref(pkt);
 		} else {
-			ts_tx_pkt[ts_tx_wr] = NULL;
+			context->ts_tx_pkt = NULL;
 		}
 
-		ts_tx_wr++;
-		if (ts_tx_wr >= CONFIG_ETH_MCUX_TX_BUFFERS) {
-			ts_tx_wr = 0;
-		}
 	} else
 #endif
 	{
 		status = ENET_SendFrame(context->base, &context->enet_handle,
-					context->frame_buf, total_len, RING_ID, false, NULL);
+					context->tx_frame_buf, total_len, RING_ID, false, NULL);
 	}
-
-	irq_unlock(imask);
 
 	if (status) {
 		LOG_ERR("ENET_SendFrame error: %d", (int)status);
+		k_mutex_unlock(&context->tx_frame_buf_mutex);
+		ENET_ReclaimTxDescriptor(context->base,
+					&context->enet_handle, RING_ID);
 		return -1;
 	}
 
+	k_mutex_unlock(&context->tx_frame_buf_mutex);
 	k_sem_take(&context->tx_buf_sem, K_FOREVER);
 
 	return 0;
 }
 
-static void eth_rx(struct eth_context *context)
+static int eth_rx(struct eth_context *context)
 {
 	uint16_t vlan_tag = NET_VLAN_TAG_UNSPEC;
 	uint32_t frame_length = 0U;
 	struct net_if *iface;
 	struct net_pkt *pkt;
 	status_t status;
-	unsigned int imask;
 	uint32_t ts;
 
 #if defined(CONFIG_PTP_CLOCK_MCUX)
@@ -745,7 +745,9 @@ static void eth_rx(struct eth_context *context)
 
 	status = ENET_GetRxFrameSize(&context->enet_handle,
 				     (uint32_t *)&frame_length, RING_ID);
-	if (status) {
+	if (status == kStatus_ENET_RxFrameEmpty) {
+		return 0;
+	} else if(status == kStatus_ENET_RxFrameError) {
 		enet_data_error_stats_t error_stats;
 
 		LOG_ERR("ENET_GetRxFrameSize return: %d", (int)status);
@@ -755,7 +757,7 @@ static void eth_rx(struct eth_context *context)
 		goto flush;
 	}
 
-	if (sizeof(context->frame_buf) < frame_length) {
+	if (NET_ETH_MAX_FRAME_SIZE < frame_length) {
 		LOG_ERR("frame too large (%d)", frame_length);
 		goto flush;
 	}
@@ -767,26 +769,29 @@ static void eth_rx(struct eth_context *context)
 		goto flush;
 	}
 
-	/* As context->frame_buf is shared resource used by both eth_tx
-	 * and eth_rx, we need to protect it with irq_lock.
+	/* in case multiply thread access
+	 * we need to protect it with mutex.
 	 */
-	imask = irq_lock();
+	k_mutex_lock(&context->rx_frame_buf_mutex, K_FOREVER);
 
 	status = ENET_ReadFrame(context->base, &context->enet_handle,
-				context->frame_buf, frame_length, RING_ID, &ts);
+				context->rx_frame_buf, frame_length, RING_ID, &ts);
 	if (status) {
-		irq_unlock(imask);
 		LOG_ERR("ENET_ReadFrame failed: %d", (int)status);
 		net_pkt_unref(pkt);
+
+		k_mutex_unlock(&context->rx_frame_buf_mutex);
 		goto error;
 	}
 
-	if (net_pkt_write(pkt, context->frame_buf, frame_length)) {
-		irq_unlock(imask);
+	if (net_pkt_write(pkt, context->rx_frame_buf, frame_length)) {
 		LOG_ERR("Unable to write frame into the pkt");
 		net_pkt_unref(pkt);
+		k_mutex_unlock(&context->rx_frame_buf_mutex);
 		goto error;
 	}
+
+	k_mutex_unlock(&context->rx_frame_buf_mutex);
 
 #if defined(CONFIG_NET_VLAN)
 	{
@@ -813,6 +818,7 @@ static void eth_rx(struct eth_context *context)
 #endif /* CONFIG_NET_VLAN */
 
 #if defined(CONFIG_PTP_CLOCK_MCUX)
+	k_mutex_lock(&context->ptp_mutex, K_FOREVER);
 	if (eth_get_ptp_data(get_iface(context, vlan_tag), pkt)) {
 		ENET_Ptp1588GetTimer(context->base, &context->enet_handle,
 					&ptpTimeData);
@@ -831,9 +837,8 @@ static void eth_rx(struct eth_context *context)
 		pkt->timestamp.nanosecond = UINT32_MAX;
 		pkt->timestamp.second = UINT64_MAX;
 	}
+	k_mutex_unlock(&context->ptp_mutex);
 #endif /* CONFIG_PTP_CLOCK_MCUX */
-
-	irq_unlock(imask);
 
 	iface = get_iface(context, vlan_tag);
 #if IS_ENABLED(CONFIG_NET_DSA)
@@ -844,7 +849,7 @@ static void eth_rx(struct eth_context *context)
 		goto error;
 	}
 
-	return;
+	return 1;
 flush:
 	/* Flush the current read buffer.  This operation can
 	 * only report failure if there is no frame to flush,
@@ -855,6 +860,7 @@ flush:
 	__ASSERT_NO_MSG(status == kStatus_Success);
 error:
 	eth_stats_update_errors_rx(get_iface(context, vlan_tag));
+	return -EIO;
 }
 
 #if defined(CONFIG_PTP_CLOCK_MCUX) && defined(CONFIG_NET_L2_PTP)
@@ -863,16 +869,19 @@ static inline void ts_register_tx_event(struct eth_context *context,
 {
 	struct net_pkt *pkt;
 
-	pkt = ts_tx_pkt[ts_tx_rd];
+	pkt = context->ts_tx_pkt;
 	if (pkt && atomic_get(&pkt->atomic_ref) > 0) {
 		if (eth_get_ptp_data(net_pkt_iface(pkt), pkt)) {
 			if (frameinfo->isTsAvail) {
+				k_mutex_lock(&context->ptp_mutex, K_FOREVER);
+
 				pkt->timestamp.nanosecond =
 					frameinfo->timeStamp.nanosecond;
 				pkt->timestamp.second =
 					frameinfo->timeStamp.second;
 
 				net_if_add_tx_timestamp(pkt);
+				k_mutex_unlock(&context->ptp_mutex);
 			}
 		}
 
@@ -883,11 +892,7 @@ static inline void ts_register_tx_event(struct eth_context *context,
 		}
 	}
 
-	ts_tx_pkt[ts_tx_rd++] = NULL;
-
-	if (ts_tx_rd >= CONFIG_ETH_MCUX_TX_BUFFERS) {
-		ts_tx_rd = 0;
-	}
+	context->ts_tx_pkt = NULL;
 }
 #endif /* CONFIG_PTP_CLOCK_MCUX && CONFIG_NET_L2_PTP */
 
@@ -901,16 +906,19 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 
 	switch (event) {
 	case kENET_RxEvent:
-		eth_rx(context);
+		k_sem_give(&context->rx_thread_sem);
 		break;
 	case kENET_TxEvent:
-#if defined(CONFIG_PTP_CLOCK_MCUX) && defined(CONFIG_NET_L2_PTP)
-		/* Register event */
-		ts_register_tx_event(context, frameinfo);
-#endif /* CONFIG_PTP_CLOCK_MCUX && CONFIG_NET_L2_PTP */
+		if (!k_is_in_isr())
+		{
+			#if defined(CONFIG_PTP_CLOCK_MCUX) && defined(CONFIG_NET_L2_PTP)
+			/* Register event */
+			ts_register_tx_event(context, frameinfo);
+			#endif /* CONFIG_PTP_CLOCK_MCUX && CONFIG_NET_L2_PTP */
 
-		/* Free the TX buffer. */
-		k_sem_give(&context->tx_buf_sem);
+			/* Free the TX buffer. */
+			k_sem_give(&context->tx_buf_sem);
+		}
 		break;
 	case kENET_ErrEvent:
 		/* Error event: BABR/BABT/EBERR/LC/RL/UN/PLR.  */
@@ -926,6 +934,46 @@ static void eth_callback(ENET_Type *base, enet_handle_t *handle,
 	case kENET_TimeStampAvailEvent:
 		/* Time stamp available event.  */
 		break;
+	}
+}
+
+static void eth_rx_thread(void *arg1, void *unused1, void *unused2)
+{
+	struct eth_context *context = (struct eth_context *)arg1;
+
+	while(1) {
+		if (k_sem_take(&context->rx_thread_sem, K_FOREVER) == 0) {
+        		while (1 == eth_rx(context)) {;}
+        		/* enable the IRQ for RX */
+			ENET_EnableInterrupts(context->base,
+			  kENET_RxFrameInterrupt | kENET_RxBufferInterrupt);
+		}
+	}
+}
+
+static void eth_tx_thread(void *arg1, void *unused1, void *unused2)
+{
+	struct eth_context *context = (struct eth_context *)arg1;
+
+	while(1) {
+		if (k_sem_take(&context->tx_thread_sem, K_FOREVER) == 0) {
+			if (context->enet_handle.txReclaimEnable[RING_ID])
+ 			{
+				ENET_ReclaimTxDescriptor(context->base,
+					&context->enet_handle, RING_ID);
+			} else {
+				enet_handle_t *handle = &context->enet_handle;
+
+				if (NULL != handle->callback)
+				{
+					handle->callback(context->base,
+						handle, kENET_TxEvent,
+						NULL, handle->userData);
+				}
+			}
+			ENET_EnableInterrupts(context->base,
+			  kENET_TxBufferInterrupt | kENET_TxFrameInterrupt);
+    		}
 	}
 }
 
@@ -992,11 +1040,14 @@ static void eth_mcux_init(const struct device *dev)
 	ENET_AddMulticastGroup(context->base, ptp_multicast);
 	ENET_AddMulticastGroup(context->base, ptp_peer_multicast);
 
-	context->ptp_config.channel = kENET_PtpTimerChannel1;
+	/* only for ERRATA_2579 */
+	context->ptp_config.channel = kENET_PtpTimerChannel3;
 	context->ptp_config.ptp1588ClockSrc_Hz =
 					CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	context->clk_ratio = 1.0;
 
+	ENET_Ptp1588SetChannelMode(context->base, kENET_PtpTimerChannel3,
+			kENET_PtpChannelPulseHighonCompare, true);
 	ENET_Ptp1588Configure(context->base, &context->enet_handle,
 			      &context->ptp_config);
 #endif
@@ -1025,23 +1076,39 @@ static int eth_init(const struct device *dev)
 {
 	struct eth_context *context = dev->data;
 
-#if defined(CONFIG_PTP_CLOCK_MCUX)
-	ts_tx_rd = 0;
-	ts_tx_wr = 0;
-	(void)memset(ts_tx_pkt, 0, sizeof(ts_tx_pkt));
-#endif
-
 #if defined(CONFIG_NET_POWER_MANAGEMENT)
 	const uint32_t inst = ENET_GetInstance(context->base);
 
 	context->clock = enet_clocks[inst];
 #endif
 
+#if defined(CONFIG_PTP_CLOCK_MCUX)
+	k_mutex_init(&context->ptp_mutex);
+#endif
+	k_mutex_init(&context->rx_frame_buf_mutex);
+	k_mutex_init(&context->tx_frame_buf_mutex);
+
+	k_sem_init(&context->rx_thread_sem, 0, CONFIG_ETH_MCUX_RX_BUFFERS);
+	k_sem_init(&context->tx_thread_sem, 0, CONFIG_ETH_MCUX_TX_BUFFERS);
 	k_sem_init(&context->tx_buf_sem,
 		   0, CONFIG_ETH_MCUX_TX_BUFFERS);
 	k_work_init(&context->phy_work, eth_mcux_phy_work);
 	k_work_init_delayable(&context->delayed_phy_work,
 			      eth_mcux_delayed_phy_work);
+
+	/* Start interruption-poll thread */
+	k_thread_create(&context->rx_thread, context->rx_thread_stack,
+			K_KERNEL_STACK_SIZEOF(context->rx_thread_stack),
+			eth_rx_thread, (void *) context, NULL, NULL,
+			K_PRIO_COOP(2),
+			0, K_NO_WAIT);
+	k_thread_name_set(&context->rx_thread, "mcux_eth_rx");
+	k_thread_create(&context->tx_thread, context->tx_thread_stack,
+			K_KERNEL_STACK_SIZEOF(context->tx_thread_stack),
+			eth_tx_thread, (void *) context, NULL, NULL,
+			K_PRIO_COOP(3),
+			0, K_NO_WAIT);
+	k_thread_name_set(&context->tx_thread, "mcux_eth_tx");
 
 	if (context->generate_mac) {
 		context->generate_mac(context->mac_addr);
@@ -1187,8 +1254,19 @@ static const struct ethernet_api api_funcs = {
 static void eth_mcux_ptp_isr(const struct device *dev)
 {
 	struct eth_context *context = dev->data;
+	int irq_lock_key = irq_lock();
+	enet_ptp_timer_channel_t channel;
 
+	/* clear channel */
+	for(channel = kENET_PtpTimerChannel1; channel <= kENET_PtpTimerChannel4; channel++)
+	{
+		if (ENET_Ptp1588GetChannelStatus(context->base, channel)) 
+		{
+			ENET_Ptp1588ClearChannelStatus(context->base, channel);
+		}
+	}
 	ENET_TimeStampIRQHandler(context->base, &context->enet_handle);
+	irq_unlock(irq_lock_key);
 }
 #endif
 
@@ -1200,16 +1278,40 @@ static void eth_mcux_common_isr(const struct device *dev)
 	int irq_lock_key = irq_lock();
 
 	if (EIR & (kENET_RxBufferInterrupt | kENET_RxFrameInterrupt)) {
+        	/* disable the IRQ for RX */
+		context->rx_irq_num++;
 		ENET_ReceiveIRQHandler(context->base, &context->enet_handle);
-	} else if (EIR & (kENET_TxBufferInterrupt | kENET_TxFrameInterrupt)) {
-		ENET_TransmitIRQHandler(context->base, &context->enet_handle);
-	} else if (EIR & ENET_EIR_MII_MASK) {
-		k_work_submit(&context->phy_work);
-		ENET_ClearInterruptStatus(context->base, kENET_MiiInterrupt);
-	} else if (EIR) {
-		ENET_ClearInterruptStatus(context->base, 0xFFFFFFFF);
+		ENET_DisableInterrupts(context->base, kENET_RxFrameInterrupt | kENET_RxBufferInterrupt);
 	}
 
+	if (EIR & kENET_TxFrameInterrupt) {
+		context->tx_irq_num++;
+		ENET_ClearInterruptStatus(context->base, kENET_TxFrameInterrupt);
+		ENET_DisableInterrupts(context->base, kENET_TxFrameInterrupt);
+		/* schedule tx thread back */
+		k_sem_give(&context->tx_thread_sem);
+	}
+
+	if (EIR | kENET_TxBufferInterrupt) {
+		ENET_ClearInterruptStatus(context->base, kENET_TxBufferInterrupt);
+		ENET_DisableInterrupts(context->base, kENET_TxBufferInterrupt);
+	}
+
+	if (EIR & ENET_EIR_MII_MASK) {
+		k_work_submit(&context->phy_work);
+		ENET_ClearInterruptStatus(context->base, kENET_MiiInterrupt);
+	}
+#if defined(CONFIG_PTP_CLOCK_MCUX)
+	if (EIR & ENET_TS_INTERRUPT) {
+		ENET_TimeStampIRQHandler(context->base, &context->enet_handle);
+	}
+#endif
+	if (EIR) {
+		ENET_ClearInterruptStatus(context->base,
+		  ~(kENET_TxBufferInterrupt | kENET_TxFrameInterrupt
+		    | kENET_RxBufferInterrupt | kENET_RxFrameInterrupt
+		    | ENET_EIR_MII_MASK | ENET_TS_INTERRUPT));
+	}
 	irq_unlock(irq_lock_key);
 }
 #endif
@@ -1219,6 +1321,7 @@ static void eth_mcux_rx_isr(const struct device *dev)
 {
 	struct eth_context *context = dev->data;
 
+	ENET_DisableInterrupts(context->base, kENET_RxFrameInterrupt | kENET_RxBufferInterrupt);
 	ENET_ReceiveIRQHandler(context->base, &context->enet_handle);
 }
 #endif
@@ -1228,7 +1331,10 @@ static void eth_mcux_tx_isr(const struct device *dev)
 {
 	struct eth_context *context = dev->data;
 
-	ENET_TransmitIRQHandler(context->base, &context->enet_handle);
+	ENET_DisableInterrupts(context->base, kENET_TxBufferInterrupt | kENET_TxFrameInterrupt);
+	ENET_ClearInterruptStatus(context->base, kENET_TxBufferInterrupt | kENET_TxFrameInterrupt);
+	/* schedule tx thread back */
+	k_sem_give(&context->tx_thread_sem);
 }
 #endif
 
@@ -1388,6 +1494,10 @@ static void eth_mcux_err_isr(const struct device *dev)
 	static phy_handle_t eth##n##_phy_handle = {			\
 		  .mdioHandle = &eth##n##_mdio_handle,			\
 		};							\
+	static NOCACHE uint8_t						\
+		tx_enet_frame_##n##_buf[NET_ETH_MAX_FRAME_SIZE];	\
+	static NOCACHE uint8_t						\
+		rx_enet_frame_##n##_buf[NET_ETH_MAX_FRAME_SIZE];	\
 									\
 	static struct eth_context eth##n##_context = {			\
 		.base = (ENET_Type *)DT_INST_REG_ADDR(n),		\
@@ -1396,6 +1506,8 @@ static void eth_mcux_err_isr(const struct device *dev)
 		.phy_duplex = kPHY_FullDuplex,				\
 		.phy_speed = kPHY_Speed100M,				\
 		.phy_handle = &eth##n##_phy_handle,			\
+		.tx_frame_buf = tx_enet_frame_##n##_buf,		\
+		.rx_frame_buf = rx_enet_frame_##n##_buf,		\
 		ETH_MCUX_MAC_ADDR(n)					\
 		ETH_MCUX_POWER(n)					\
 	};								\
@@ -1517,14 +1629,14 @@ static int ptp_clock_mcux_adjust(const struct device *dev, int increment)
 	return ret;
 }
 
-static int ptp_clock_mcux_rate_adjust(const struct device *dev, float ratio)
+static int ptp_clock_mcux_rate_adjust(const struct device *dev, double ratio)
 {
 	const int hw_inc = NSEC_PER_SEC / CONFIG_ETH_MCUX_PTP_CLOCK_SRC_HZ;
 	struct ptp_context *ptp_context = dev->data;
 	struct eth_context *context = ptp_context->eth_context;
 	int corr;
 	int32_t mul;
-	float val;
+	double val;
 
 	/* No change needed. */
 	if (ratio == 1.0f) {
